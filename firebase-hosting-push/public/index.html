@@ -3,6 +3,10 @@
 <title>Last Demons · Notifiche</title>
 <link rel="manifest" href="/manifest.webmanifest">
 <meta name="theme-color" content="#07080b">
+<meta name="application-name" content="Last Demons">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Last Demons">
+<link rel="apple-touch-icon" href="/icons/icon-192.png">
 <style>
 body{margin:0;background:#07080b;color:#fff;font-family:Arial,sans-serif;display:grid;place-items:center;min-height:100vh}
 .card{width:min(520px,88vw);padding:28px;border:1px solid #8d1720;border-radius:24px;background:#0d0f13;text-align:center}
@@ -14,6 +18,7 @@ button{background:#f71931;color:white} a{background:#292c32;color:white} #status
 <h1>LAST <span>DEMONS</span></h1>
 <p>Attiva le notifiche Last Demons su questo dispositivo per ricevere aggiornamenti importanti.</p>
 <button id="enable">🔔 ATTIVA NOTIFICHE</button>
+<button id="launch" type="button" style="display:none">🎮 APRI LAST DEMONS</button>
 <a id="back" href="">TORNA ALL'APP</a>
 <button id="install" type="button" style="display:none;background:#292c32">📲 INSTALLA LAST DEMONS</button>
 <div id="status"></div><div class="small">Dopo la conferma tornerai automaticamente all'app.</div>
@@ -47,6 +52,30 @@ try {
 const back = document.getElementById("back");
 const status = document.getElementById("status");
 const enable = document.getElementById("enable");
+const launch = document.getElementById("launch");
+
+// Public app destination used by the installed Firebase PWA launcher.
+// When this page is reached from Streamlit for push activation, the signed return URL still wins.
+const APP_URL = "https://last-demons-esports-zs3kcunxuyc4lxlix4olw8.streamlit.app/";
+if (returnUrl) {
+  // Push return is handled directly; do not persist it as the Player launcher target.
+}
+
+if (!assertion) {
+  enable.style.display = "none";
+  launch.style.display = "block";
+  document.getElementById("install").style.display = "block";
+  document.querySelector("main p").textContent =
+    "Last Demons Esports. Installa l’app sul dispositivo oppure apri il portale.";
+  document.querySelector(".small").textContent =
+    "Dopo l’installazione troverai Last Demons nella schermata Home.";
+}
+
+launch.addEventListener("click", () => {
+  // Always open the canonical public Player app. This intentionally ignores
+  // stale URLs cached by older installed versions of the PWA.
+  window.location.href = APP_URL;
+});
 
 if (returnUrl) {
   back.href = returnUrl;

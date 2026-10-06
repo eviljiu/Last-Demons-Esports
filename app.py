@@ -8,6 +8,7 @@ import json
 import time
 import hmac
 import uuid
+import unicodedata
 import requests
 import threading
 import psycopg2
@@ -1876,11 +1877,14 @@ if not st.session_state.player_logged_in and not st.session_state.founder_logged
                 confirm = st.text_input("Conferma password", type="password")
                 submit = st.form_submit_button("🔥 INVIA CANDIDATURA", type="primary", use_container_width=True)
                 if submit:
-                    clean_id=act_id.strip()
+                    clean_id = act_id.strip()
+                    has_control_chars = any(unicodedata.category(ch).startswith("C") for ch in clean_id)
                     if not clean_id or "#" not in clean_id:
                         st.error("Inserisci un Activision ID valido con #.")
-                    elif len(clean_id) > 64 or not re.fullmatch(r"[A-Za-z0-9_. -]{1,48}#[A-Za-z0-9]{1,12}", clean_id):
-                        st.error("Activision ID non valido. Usa solo lettere, numeri, spazio, _, -, . e il codice dopo #.")
+                    elif len(clean_id) > 64:
+                        st.error("Activision ID troppo lungo (massimo 64 caratteri).")
+                    elif has_control_chars:
+                        st.error("Activision ID non valido: contiene caratteri di controllo o invisibili.")
                     elif len(password)<8:
                         st.error("La password deve avere almeno 8 caratteri.")
                     elif password!=confirm:

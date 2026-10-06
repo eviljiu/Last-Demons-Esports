@@ -20,5 +20,11 @@
       "type": "image/png",
       "purpose": "any maskable"
     }
+  ],
+  "id": "/",
+  "orientation": "portrait-primary",
+  "categories": [
+    "sports",
+    "games"
   ]
 }
