@@ -2668,6 +2668,88 @@ if st.session_state.founder_logged_in:
                     )
                     st.rerun()
 
+
+        st.markdown("### 🧹 Gestione stagione corrente")
+        st.caption(
+            "Azzera risultati elimina soltanto le prove/risultati della stagione attiva. "
+            "La stagione resta la stessa e i player non vengono modificati."
+        )
+        if current:
+            with st.form("clear_current_season_results"):
+                clear_check = st.checkbox(
+                    f"Confermo di voler azzerare tutti i risultati di {current[1]}"
+                )
+                clear_text = st.text_input(
+                    'Scrivi AZZERA RISULTATI per confermare',
+                    placeholder="AZZERA RISULTATI",
+                )
+                clear_btn = st.form_submit_button(
+                    "🧹 AZZERA RISULTATI STAGIONE CORRENTE",
+                    use_container_width=True,
+                )
+                if clear_btn:
+                    if not clear_check or clear_text.strip().upper() != "AZZERA RISULTATI":
+                        st.error('Spunta la conferma e scrivi AZZERA RISULTATI.')
+                    else:
+                        db_query(
+                            "DELETE FROM submissions WHERE season_id=?",
+                            (current[0],),
+                            commit=True,
+                        )
+                        st.success(
+                            f"Risultati di {current[1]} azzerati. La stagione resta attiva."
+                        )
+                        st.rerun()
+
+        past_seasons = [s for s in seasons if not s[4]]
+        st.markdown("### 🗑️ Elimina stagioni passate")
+        st.caption(
+            "L'eliminazione è definitiva: rimuove la stagione selezionata e tutte le prove "
+            "associate. La stagione attiva non può essere eliminata da qui."
+        )
+        if not past_seasons:
+            st.info("Non ci sono stagioni passate da eliminare.")
+        else:
+            past_map = {
+                f"{s[1]} · ID {s[0]}": (s[0], s[1])
+                for s in past_seasons
+            }
+            with st.form("delete_past_season"):
+                selected_past = st.selectbox(
+                    "Stagione passata da eliminare",
+                    list(past_map.keys()),
+                )
+                delete_check = st.checkbox(
+                    "Confermo di voler eliminare definitivamente questa stagione e i suoi risultati"
+                )
+                delete_text = st.text_input(
+                    'Scrivi ELIMINA STAGIONE per confermare',
+                    placeholder="ELIMINA STAGIONE",
+                )
+                delete_btn = st.form_submit_button(
+                    "🗑️ ELIMINA STAGIONE PASSATA",
+                    use_container_width=True,
+                )
+                if delete_btn:
+                    sid, sname = past_map[selected_past]
+                    if not delete_check or delete_text.strip().upper() != "ELIMINA STAGIONE":
+                        st.error('Spunta la conferma e scrivi ELIMINA STAGIONE.')
+                    else:
+                        # Atomic and guarded: only an inactive season can be removed.
+                        db_transaction([
+                            (
+                                "DELETE FROM submissions WHERE season_id=? "
+                                "AND EXISTS (SELECT 1 FROM seasons WHERE id=? AND is_active=FALSE)",
+                                (sid, sid),
+                            ),
+                            (
+                                "DELETE FROM seasons WHERE id=? AND is_active=FALSE",
+                                (sid,),
+                            ),
+                        ])
+                        st.success(f"Stagione {sname} eliminata definitivamente.")
+                        st.rerun()
+
     st.stop()
 
 
