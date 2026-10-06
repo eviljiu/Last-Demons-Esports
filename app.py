@@ -562,8 +562,8 @@ letter-spacing:.10em;text-transform:uppercase;line-height:1.2}
 }
 .ld-founder-shot{position:relative;display:flex;justify-content:center;align-items:stretch;min-width:180px;max-width:330px;margin-left:auto;padding-left:42px;overflow:visible}
 .ld-founder-shot img{display:block;width:100%;height:auto;max-height:430px;object-fit:contain;object-position:center;border-radius:18px;border:1px solid rgba(239,24,40,.35);box-shadow:0 12px 35px rgba(0,0,0,.35)}
-.ld-founder-tag{position:absolute;left:2px;top:0;bottom:0;width:34px;display:flex;align-items:center;justify-content:center;border-radius:8px;background:linear-gradient(180deg,rgba(7,7,9,.98),rgba(55,0,7,.94));border-left:2px solid #ef1828;border-right:1px solid rgba(239,24,40,.5);box-shadow:0 8px 24px rgba(0,0,0,.42);overflow:hidden}
-.ld-founder-tag span{writing-mode:vertical-rl;text-orientation:mixed;color:#fff;font-family:Impact,'Arial Narrow',sans-serif;font-weight:950;letter-spacing:.22em;font-size:.84rem;line-height:1;text-shadow:0 0 12px rgba(239,24,40,.75)}
+.ld-founder-tag{position:absolute;left:2px;top:0;bottom:0;width:38px;display:flex;flex-direction:column;align-items:center;justify-content:space-evenly;padding:12px 0;border-radius:8px;background:linear-gradient(180deg,rgba(7,7,9,.98),rgba(55,0,7,.94));border-left:2px solid #ef1828;border-right:1px solid rgba(239,24,40,.5);box-shadow:0 8px 24px rgba(0,0,0,.42);overflow:hidden;box-sizing:border-box}
+.ld-founder-tag span{display:block;color:#fff;font-family:Impact,'Arial Narrow',sans-serif;font-weight:950;font-size:1.02rem;line-height:1;text-shadow:0 0 12px rgba(239,24,40,.85)}
 .ld-founder-name{position:absolute;left:52px;right:10px;bottom:10px;text-align:center;padding:7px 10px;border-radius:9px;background:rgba(4,5,7,.78);border:1px solid rgba(239,24,40,.38);backdrop-filter:blur(5px);color:#fff;font-family:Impact,'Arial Narrow',sans-serif;font-size:.92rem;font-weight:900;letter-spacing:.14em;text-shadow:0 0 12px rgba(239,24,40,.75)}
 .ld-ops-wrap{margin:12px 0 20px;padding:16px;border:1px solid rgba(239,24,40,.18);border-radius:18px;background:linear-gradient(145deg,rgba(20,20,22,.96),rgba(8,8,10,.96));box-shadow:0 12px 32px rgba(0,0,0,.22)}
 .ld-ops-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px}.ld-ops-title{font-weight:950;letter-spacing:.08em;font-size:1rem}.ld-ops-badge{font-size:.72rem;font-weight:900;padding:5px 9px;border-radius:999px;background:rgba(239,24,40,.13);border:1px solid rgba(239,24,40,.35);color:#ff6672}
@@ -627,8 +627,8 @@ letter-spacing:.10em;text-transform:uppercase;line-height:1.2}
 @media(max-width:760px){
   .ld-hero .ld-founder-shot{position:relative!important;width:min(100%,310px)!important;max-width:310px!important;padding-left:38px!important;align-items:stretch!important}
   .ld-hero .ld-founder-shot img{width:100%!important;height:auto!important;max-height:none!important;object-fit:contain!important}
-  .ld-hero .ld-founder-tag{left:0!important;top:0!important;bottom:0!important;width:31px!important;height:auto!important;transform:none!important;padding:0!important}
-  .ld-hero .ld-founder-tag span{font-size:.74rem!important;letter-spacing:.20em!important}
+  .ld-hero .ld-founder-tag{left:0!important;top:0!important;bottom:0!important;width:34px!important;height:auto!important;transform:none!important;padding:8px 0!important;justify-content:space-evenly!important}
+  .ld-hero .ld-founder-tag span{font-size:.86rem!important;line-height:1!important}
   .ld-hero .ld-founder-name{left:46px!important;right:8px!important;bottom:8px!important;font-size:.78rem!important;padding:6px 8px!important}
 }
 
@@ -657,7 +657,9 @@ def hero():
             </div>
             <div class="ld-founder-shot">
                 <img src="{FOUNDER_PORTRAIT_DATA_URI}" alt="Founder Last Demons">
-                <div class="ld-founder-tag"><span>FOUNDER</span></div>
+                <div class="ld-founder-tag" aria-label="FOUNDER">
+                  <span>F</span><span>O</span><span>U</span><span>N</span><span>D</span><span>E</span><span>R</span>
+                </div>
                 <div class="ld-founder-name">Diablo_TV</div>
             </div>
         </div>
@@ -813,6 +815,27 @@ def init_db():
             "CREATE INDEX IF NOT EXISTS idx_push_identity_active "
             "ON push_subscriptions(identity_type, identity_id, is_active)"
         )
+        cur.execute(
+            """
+            DO $$
+            DECLARE c RECORD;
+            BEGIN
+              FOR c IN
+                SELECT conname
+                FROM pg_constraint
+                WHERE conrelid='push_subscriptions'::regclass
+                  AND contype='u'
+                  AND pg_get_constraintdef(oid) ILIKE '%(fcm_token)%'
+              LOOP
+                EXECUTE format('ALTER TABLE push_subscriptions DROP CONSTRAINT %I', c.conname);
+              END LOOP;
+            END $$;
+            """
+        )
+        cur.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_push_identity_token_unique "
+            "ON push_subscriptions(identity_type, identity_id, fcm_token)"
+        )
 
         cur.execute(
             """
@@ -870,6 +893,10 @@ def init_db():
         cur.execute("CREATE INDEX IF NOT EXISTS idx_notifications_unread_player ON notifications(activision_id, created_at DESC) WHERE is_read=FALSE")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_founder_notifications_unread ON founder_notifications(created_at DESC) WHERE is_read=FALSE")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_players_approved_name ON players(LOWER(activision_id)) WHERE status='Approved'")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_founder_notifications_active_created ON founder_notifications(created_at DESC) WHERE COALESCE(is_archived,FALSE)=FALSE")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_submissions_pending_sender_time ON submissions(activision_id, timestamp DESC) WHERE status='Pending'")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_submissions_leaderboard_hot ON submissions(season_id, month_year, activision_id) WHERE status='Approved'")
+
 
         conn.commit()
     finally:
@@ -951,6 +978,31 @@ def db_query(query, params=(), fetchall=False, commit=False):
     finally:
         release_conn(conn)
 
+
+
+def db_transaction(statements):
+    """Execute multiple write statements atomically and invalidate all touched table caches."""
+    conn = get_conn()
+    changed = []
+    try:
+        with conn.cursor() as cur:
+            for query, params in statements:
+                cur.execute(_sql(query), tuple(params or ()))
+                changed.append(query)
+        conn.commit()
+        st.session_state["_ld_hot_reads"] = {}
+        st.session_state.pop("_active_season", None)
+        versions = _cache_versions()
+        touched = set()
+        for query in changed:
+            touched.update(_query_tables(query))
+        for table in touched:
+            versions[table] += 1
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        release_conn(conn)
 
 
 init_db()
@@ -1908,11 +1960,11 @@ def _nav_to(state_key: str, page: str):
 
 def _badge_label(label: str, count: int) -> str:
     count = int(count or 0)
-    return f"{label}                              • {count}" if count > 0 else label
+    return f"{label}                              🔴 {count}" if count > 0 else label
 
 
 def _base_nav_label(value: str) -> str:
-    return re.sub(r"\s+•\s+\d+$", "", value or "")
+    return re.sub(r"\s+🔴\s+\d+$", "", value or "")
 
 
 # ============================================================
@@ -2124,7 +2176,7 @@ if st.session_state.founder_logged_in:
                     left, right = st.columns([5,1])
                     with left:
                         nuova = " · NUOVA" if not is_read else ""
-                        st.markdown(f"**{icons.get(event_type,'🔔')} {message}{nuova}**")
+                        st.markdown(f"**{icons.get(event_type,'🔔')} {html.escape(str(message))}{nuova}**")
                         meta = f"Activision ID: {act_id} · " if act_id else ""
                         st.caption(f"{meta}{str(created)[:16]}")
                     with right:
@@ -2267,7 +2319,7 @@ if st.session_state.founder_logged_in:
         ids = [
             r[0]
             for r in db_query(
-                "SELECT DISTINCT activision_id FROM submissions ORDER BY LOWER(activision_id)",
+                "SELECT activision_id FROM submissions GROUP BY activision_id ORDER BY LOWER(activision_id)",
                 fetchall=True,
             ) or []
         ]
@@ -2298,6 +2350,7 @@ if st.session_state.founder_logged_in:
                     ORDER BY
                       CASE status WHEN 'Pending' THEN 0 WHEN 'Approved' THEN 1 ELSE 2 END,
                       timestamp DESC
+                    LIMIT 250
                     """,
                     (selected,),
                     fetchall=True,
@@ -2310,6 +2363,7 @@ if st.session_state.founder_logged_in:
                     FROM submissions
                     WHERE activision_id=? AND status=?
                     ORDER BY timestamp DESC
+                    LIMIT 250
                     """,
                     (selected, proof_filter),
                     fetchall=True,
@@ -2516,10 +2570,13 @@ if st.session_state.founder_logged_in:
 
                 # Remove relational data first. Storage cleanup is best-effort afterwards:
                 # a temporary Storage failure must never leave a player half-deleted in the DB.
-                db_query("DELETE FROM notifications WHERE activision_id=?", (chosen,), commit=True)
-                db_query("DELETE FROM push_subscriptions WHERE identity_type='player' AND identity_id=?", (chosen,), commit=True)
-                db_query("DELETE FROM submissions WHERE activision_id=?", (chosen,), commit=True)
-                db_query("DELETE FROM players WHERE activision_id=?", (chosen,), commit=True)
+                db_transaction([
+                    ("DELETE FROM notifications WHERE activision_id=?", (chosen,)),
+                    ("DELETE FROM push_subscriptions WHERE identity_type='player' AND identity_id=?", (chosen,)),
+                    ("DELETE FROM submissions WHERE activision_id=?", (chosen,)),
+                    ("DELETE FROM founder_notifications WHERE activision_id=?", (chosen,)),
+                    ("DELETE FROM players WHERE activision_id=?", (chosen,)),
+                ])
 
                 for url in cleanup_urls:
                     delete_storage_url(url)
@@ -2553,15 +2610,10 @@ if st.session_state.founder_logged_in:
                 if not season_name.strip() or not confirm_season:
                     st.error("Inserisci un nome e conferma.")
                 else:
-                    db_query(
-                        "UPDATE seasons SET is_active=FALSE, ended_at=CURRENT_TIMESTAMP WHERE is_active=TRUE",
-                        commit=True,
-                    )
-                    db_query(
-                        "INSERT INTO seasons (name, is_active) VALUES (?, TRUE)",
-                        (season_name.strip(),),
-                        commit=True,
-                    )
+                    db_transaction([
+                        ("UPDATE seasons SET is_active=FALSE, ended_at=CURRENT_TIMESTAMP WHERE is_active=TRUE", ()),
+                        ("INSERT INTO seasons (name, is_active) VALUES (?, TRUE)", (season_name.strip(),)),
+                    ])
                     st.success("Nuova stagione avviata. Lo storico precedente resta disponibile.")
                     st.rerun()
 
@@ -3079,7 +3131,7 @@ elif player_page == "🔔 Notifiche":
             with st.container(border=True):
                 left, right = st.columns([5, 1])
                 with left:
-                    st.markdown(("✓ " if is_read else "🔴 ") + message)
+                    st.markdown(("✓ " if is_read else "●  ") + html.escape(str(message)))
                     st.caption(str(created)[:16])
                 with right:
                     if st.button("Apri →", key=f"player_note_open_{nid}", use_container_width=True):
