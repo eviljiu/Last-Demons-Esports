@@ -834,7 +834,14 @@ def init_db():
                 FROM pg_constraint
                 WHERE conrelid='push_subscriptions'::regclass
                   AND contype='u'
-                  AND pg_get_constraintdef(oid) ILIKE '%(fcm_token)%'
+                  AND array_length(conkey, 1)=1
+                  AND EXISTS (
+                    SELECT 1
+                    FROM pg_attribute a
+                    WHERE a.attrelid=conrelid
+                      AND a.attnum=conkey[1]
+                      AND a.attname='fcm_token'
+                  )
               LOOP
                 EXECUTE format('ALTER TABLE push_subscriptions DROP CONSTRAINT %I', c.conname);
               END LOOP;
@@ -2340,7 +2347,7 @@ if st.session_state.founder_logged_in:
         ids = [
             r[0]
             for r in db_query(
-                "SELECT activision_id FROM submissions GROUP BY activision_id ORDER BY LOWER(activision_id)",
+                """SELECT activision_id FROM players UNION SELECT activision_id FROM submissions ORDER BY activision_id""",
                 fetchall=True,
             ) or []
         ]
