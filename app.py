@@ -867,6 +867,8 @@ def init_db():
             """
         )
         cur.execute("ALTER TABLE founder_notifications ADD COLUMN IF NOT EXISTS is_archived BOOLEAN DEFAULT FALSE")
+        cur.execute("ALTER TABLE notifications ADD COLUMN IF NOT EXISTS is_archived BOOLEAN DEFAULT FALSE")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_notifications_player_archive ON notifications(activision_id, is_archived, created_at DESC)")
         cur.execute(
             "CREATE INDEX IF NOT EXISTS idx_founder_notifications_read_created "
             "ON founder_notifications(is_read, created_at DESC)"
@@ -2634,22 +2636,36 @@ if st.session_state.founder_logged_in:
         )
 
         st.warning(
-            "Avviare una nuova stagione NON cancella lo storico. "
-            "Chiude quella corrente e crea una nuova classifica separata."
+            "⚠️ AZZERA STAGIONE chiude la stagione corrente e avvia una nuova stagione con "
+            "Top Fragger, Win Rate, Rating, kill, win e match tutti a 0. "
+            "I player e lo storico della stagione precedente NON vengono cancellati."
         )
-        with st.form("new_season"):
+        with st.form("reset_and_new_season"):
             season_name = st.text_input("Nome nuova stagione", placeholder="Season 2")
-            confirm_season = st.checkbox("Confermo il cambio stagione")
-            new_season_btn = st.form_submit_button("🚀 AVVIA NUOVA STAGIONE", type="primary")
+            confirm_season = st.checkbox(
+                "Confermo: voglio azzerare le classifiche e avviare una nuova stagione"
+            )
+            confirm_text = st.text_input("Scrivi AZZERA per confermare", placeholder="AZZERA")
+            new_season_btn = st.form_submit_button(
+                "🔄 AZZERA STAGIONE E AVVIA NUOVA",
+                type="primary",
+                use_container_width=True,
+            )
             if new_season_btn:
-                if not season_name.strip() or not confirm_season:
-                    st.error("Inserisci un nome e conferma.")
+                if not season_name.strip():
+                    st.error("Inserisci il nome della nuova stagione.")
+                elif not confirm_season or confirm_text.strip().upper() != "AZZERA":
+                    st.error("Per sicurezza spunta la conferma e scrivi AZZERA.")
                 else:
                     db_transaction([
                         ("UPDATE seasons SET is_active=FALSE, ended_at=CURRENT_TIMESTAMP WHERE is_active=TRUE", ()),
                         ("INSERT INTO seasons (name, is_active) VALUES (?, TRUE)", (season_name.strip(),)),
                     ])
-                    st.success("Nuova stagione avviata. Lo storico precedente resta disponibile.")
+                    st.session_state.pop("_active_season", None)
+                    st.success(
+                        "Nuova stagione avviata: classifiche e punteggi ripartono da 0. "
+                        "Lo storico precedente è conservato."
+                    )
                     st.rerun()
 
     st.stop()
@@ -3149,38 +3165,85 @@ elif player_page == "📸 Carica Prova":
 elif player_page == "🔔 Notifiche":
     st.markdown('<div class="ld-section">NOTIFICHE</div>', unsafe_allow_html=True)
     render_push_opt_in("player", player_id)
+
     notes = db_query(
         """
         SELECT id, message, is_read, created_at
         FROM notifications
-        WHERE activision_id=?
+        WHERE activision_id=? AND COALESCE(is_archived, FALSE)=FALSE
         ORDER BY created_at DESC
         LIMIT 100
         """,
         (player_id,), fetchall=True,
     ) or []
+
+    archived_notes = db_query(
+        """
+        SELECT id, message, is_read, created_at
+        FROM notifications
+        WHERE activision_id=? AND COALESCE(is_archived, FALSE)=TRUE
+        ORDER BY created_at DESC
+        LIMIT 100
+        """,
+        (player_id,), fetchall=True,
+    ) or []
+
     if not notes:
-        st.info("Nessuna notifica.")
+        st.info("Nessuna notifica attiva.")
     else:
         for nid, message, is_read, created in notes:
             with st.container(border=True):
-                left, right = st.columns([5, 1])
-                with left:
-                    st.markdown(("✓ " if is_read else "●  ") + html.escape(str(message)))
-                    st.caption(str(created)[:16])
-                with right:
+                st.markdown(("✓ " if is_read else "●  ") + html.escape(str(message)))
+                st.caption(str(created)[:16])
+                c1, c2 = st.columns(2)
+                with c1:
                     if st.button("Apri →", key=f"player_note_open_{nid}", use_container_width=True):
                         if not is_read:
-                            db_query("UPDATE notifications SET is_read=TRUE WHERE id=? AND activision_id=?", (nid, player_id), commit=True)
+                            db_query(
+                                "UPDATE notifications SET is_read=TRUE WHERE id=? AND activision_id=?",
+                                (nid, player_id), commit=True,
+                            )
                         st.session_state["_player_nav_target"] = "👤 Il mio Profilo"
                         st.rerun()
+                with c2:
+                    if st.button("🗃️ Archivia", key=f"player_note_archive_{nid}", use_container_width=True):
+                        db_query(
+                            "UPDATE notifications SET is_archived=TRUE, is_read=TRUE WHERE id=? AND activision_id=?",
+                            (nid, player_id), commit=True,
+                        )
+                        st.rerun()
+
         if st.button("✓ Segna tutte come lette", use_container_width=True):
             db_query(
-                "UPDATE notifications SET is_read=TRUE WHERE activision_id=?",
+                "UPDATE notifications SET is_read=TRUE WHERE activision_id=? AND COALESCE(is_archived, FALSE)=FALSE",
                 (player_id,), commit=True,
             )
             st.rerun()
 
+    with st.expander(f"🗃️ Archivio notifiche ({len(archived_notes)})", expanded=False):
+        if not archived_notes:
+            st.caption("Archivio vuoto.")
+        else:
+            st.caption("Le notifiche archiviate restano qui finché non le elimini definitivamente.")
+            for nid, message, is_read, created in archived_notes:
+                with st.container(border=True):
+                    st.markdown("✓ " + html.escape(str(message)))
+                    st.caption(str(created)[:16])
+                    a1, a2 = st.columns(2)
+                    with a1:
+                        if st.button("↩️ Ripristina", key=f"player_note_restore_{nid}", use_container_width=True):
+                            db_query(
+                                "UPDATE notifications SET is_archived=FALSE WHERE id=? AND activision_id=?",
+                                (nid, player_id), commit=True,
+                            )
+                            st.rerun()
+                    with a2:
+                        if st.button("🗑️ Elimina definitivamente", key=f"player_note_delete_{nid}", use_container_width=True):
+                            db_query(
+                                "DELETE FROM notifications WHERE id=? AND activision_id=?",
+                                (nid, player_id), commit=True,
+                            )
+                            st.rerun()
 
 elif player_page == "🪪 Player Card":
     st.markdown('<div class="ld-section">PLAYER CARD CONDIVISIBILE</div>', unsafe_allow_html=True)
