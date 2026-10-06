@@ -12,7 +12,7 @@ button{background:#f71931;color:white} a{background:#292c32;color:white} #status
 <h1>LAST <span>DEMONS</span></h1>
 <p>Attiva le notifiche del tuo dispositivo. Il permesso viene richiesto dal dominio Firebase dedicato alle push.</p>
 <button id="enable">🔔 ATTIVA NOTIFICHE</button>
-<a id="back" href="https://last-demons-esports-zs3kcunxuyc4lxix4olw8.streamlit.app/">TORNA ALL'APP</a>
+<a id="back" href="">TORNA ALL'APP</a>
 <div id="status"></div><div class="small">Dopo la conferma tornerai automaticamente all'app.</div>
 </main>
 <script src="https://www.gstatic.com/firebasejs/11.0.2/firebase-app-compat.js"></script>
@@ -27,16 +27,17 @@ firebase.initializeApp({
   appId: "1:36761061003:web:dec18c5ee7757beb1e768e"
 });
 const messaging=firebase.messaging();
-const FALLBACK="https://last-demons-esports-zs3kcunxuyc4lxix4olw8.streamlit.app/";
+const FALLBACK="";
 const hash=new URLSearchParams(location.hash.slice(1));
 const assertion=hash.get("a")||"";
-let returnUrl=hash.get("r")||FALLBACK;
+let returnUrl=hash.get("r")||"";
 // Security: only allow HTTPS return destinations. Streamlit public URL is the fallback.
 try {
   const u=new URL(returnUrl);
-  if(u.protocol!=="https:") throw new Error("bad protocol");
-} catch(_) { returnUrl=FALLBACK; }
-document.getElementById("back").href=returnUrl;
+  if(u.protocol!=="https:" || !u.hostname.endsWith(".streamlit.app")) throw new Error("bad return");
+} catch(_) { returnUrl=""; }
+const back=document.getElementById("back");
+if(returnUrl){ back.href=returnUrl; } else { back.style.display="none"; }
 const status=document.getElementById("status");
 document.getElementById("enable").onclick=async()=>{
   try {
@@ -50,7 +51,8 @@ document.getElementById("enable").onclick=async()=>{
     if(!r.ok) throw new Error("Registrazione server non riuscita ("+r.status+").");
     history.replaceState(null,"",location.pathname);
     status.textContent="✅ Notifiche attivate. Ritorno all'app…";
-    setTimeout(()=>location.replace(returnUrl),1200);
+    if(returnUrl){ setTimeout(()=>location.replace(returnUrl),1200); }
+    else { status.textContent="✅ Notifiche attivate. Puoi chiudere questa scheda e tornare all'app."; }
   } catch(e) {
     status.textContent="⚠️ "+(e?.message||"Errore durante l'attivazione.");
   }

@@ -14,12 +14,12 @@ messaging.onBackgroundMessage((payload)=>{
   const options={
     body:payload?.notification?.body||"",
     icon:"/icon-192.png", badge:"/icon-192.png",
-    data:{url:payload?.fcmOptions?.link||payload?.data?.url||"https://last-demons-esports-zs3kcunxuyc4lxix4olw8.streamlit.app/"}
+    data:{url:payload?.fcmOptions?.link||payload?.data?.url||"https://last-demons.web.app/"}
   };
   self.registration.showNotification(title,options);
 });
 self.addEventListener("notificationclick",(event)=>{
   event.notification.close();
-  const url=event.notification?.data?.url||"https://last-demons-esports-zs3kcunxuyc4lxix4olw8.streamlit.app/";
+  const url=event.notification?.data?.url||"https://last-demons.web.app/";
   event.waitUntil(clients.openWindow(url));
 });

@@ -550,6 +550,57 @@ letter-spacing:.10em;text-transform:uppercase;line-height:1.2}
 @media(max-width:760px){.ld-founder-shot{width:min(100%,300px);max-width:300px;margin:12px auto 0;padding-left:30px;box-sizing:border-box}.ld-founder-shot img{width:auto;max-width:100%;height:auto;max-height:390px;object-fit:contain;object-position:center}.ld-founder-tag{left:1px;top:50%;bottom:auto;transform:translateY(-50%);font-size:.72rem;padding:11px 7px}.ld-alert-grid{grid-template-columns:1fr}.ld-ops-wrap{padding:13px}.ld-ops-head{align-items:flex-start}}
 
 
+
+/* V3.4.9 — mobile public/login hero: never crop the Founder image */
+@media (max-width: 760px) {
+  .ld-hero{
+    display:flex !important;
+    flex-direction:column !important;
+    align-items:center !important;
+    justify-content:flex-start !important;
+    height:auto !important;
+    min-height:0 !important;
+    overflow:visible !important;
+    padding:16px 12px 18px !important;
+    gap:8px !important;
+  }
+  .ld-hero .ld-logo{
+    width:92px !important;
+    height:92px !important;
+    flex:0 0 auto !important;
+  }
+  .ld-hero-copy{
+    width:100% !important;
+    padding:0 !important;
+    text-align:center !important;
+  }
+  .ld-hero .ld-founder-shot{
+    width:min(100%, 300px) !important;
+    max-width:300px !important;
+    height:auto !important;
+    max-height:none !important;
+    margin:8px auto 0 !important;
+    padding-left:28px !important;
+    overflow:visible !important;
+    box-sizing:border-box !important;
+    flex:0 0 auto !important;
+  }
+  .ld-hero .ld-founder-shot img{
+    display:block !important;
+    width:100% !important;
+    max-width:100% !important;
+    height:auto !important;
+    max-height:none !important;
+    object-fit:contain !important;
+    object-position:center center !important;
+  }
+  .ld-hero .ld-founder-tag{
+    left:0 !important;
+    top:50% !important;
+    bottom:auto !important;
+    transform:translateY(-50%) !important;
+  }
+}
 </style>
     """,
     unsafe_allow_html=True,
@@ -736,9 +787,14 @@ def init_db():
             )
             """
         )
+        cur.execute("ALTER TABLE founder_notifications ADD COLUMN IF NOT EXISTS is_archived BOOLEAN DEFAULT FALSE")
         cur.execute(
             "CREATE INDEX IF NOT EXISTS idx_founder_notifications_read_created "
             "ON founder_notifications(is_read, created_at DESC)"
+        )
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_founder_notifications_archive_created "
+            "ON founder_notifications(is_archived, created_at DESC)"
         )
         cur.execute(
             "CREATE INDEX IF NOT EXISTS idx_submissions_selection_leaderboard "
@@ -1815,7 +1871,7 @@ if st.session_state.founder_logged_in:
         SELECT
           (SELECT COUNT(*) FROM players WHERE status='Pending'),
           (SELECT COUNT(*) FROM submissions WHERE status='Pending'),
-          (SELECT COUNT(*) FROM founder_notifications WHERE is_read=FALSE)
+          (SELECT COUNT(*) FROM founder_notifications WHERE is_read=FALSE AND COALESCE(is_archived,FALSE)=FALSE)
         """,
         fetchall=True,
     )[0]
@@ -1852,7 +1908,7 @@ if st.session_state.founder_logged_in:
               (SELECT COUNT(*) FROM players WHERE status='Approved'),
               (SELECT COUNT(*) FROM players WHERE status='Pending'),
               (SELECT COUNT(*) FROM submissions WHERE status='Pending'),
-              (SELECT COUNT(*) FROM founder_notifications WHERE is_read=FALSE)
+              (SELECT COUNT(*) FROM founder_notifications WHERE is_read=FALSE AND COALESCE(is_archived,FALSE)=FALSE)
             """,
             fetchall=True,
         )[0]
@@ -1970,8 +2026,26 @@ if st.session_state.founder_logged_in:
     elif founder_page == "🔔 Notifiche":
         st.markdown('<div class="ld-section">NOTIFICHE FOUNDER</div>', unsafe_allow_html=True)
         render_push_opt_in("founder", "founder")
+
+        archive_col1, archive_col2 = st.columns([4, 1])
+        with archive_col2:
+            with st.popover("🗃️ Archivio"):
+                archived_notes = db_query(
+                    "SELECT id,event_type,activision_id,message,created_at FROM founder_notifications WHERE COALESCE(is_archived,FALSE)=TRUE ORDER BY created_at DESC LIMIT 200",
+                    fetchall=True,
+                ) or []
+                if not archived_notes:
+                    st.caption("Archivio vuoto.")
+                else:
+                    st.caption(f"{len(archived_notes)} notifiche archiviate")
+                    for anid, aevent, aact, amsg, acreated in archived_notes:
+                        st.markdown(f"**{html.escape(str(amsg))}**")
+                        meta = f"{aact} · " if aact else ""
+                        st.caption(f"{meta}{str(acreated)[:16]}")
+                        st.divider()
+
         founder_notes = db_query(
-            "SELECT id,event_type,activision_id,message,is_read,created_at FROM founder_notifications ORDER BY created_at DESC LIMIT 150",
+            "SELECT id,event_type,activision_id,message,is_read,created_at FROM founder_notifications WHERE COALESCE(is_archived,FALSE)=FALSE ORDER BY created_at DESC LIMIT 150",
             fetchall=True,
         ) or []
         unread_founder = sum(1 for row in founder_notes if not row[4])
@@ -1979,7 +2053,7 @@ if st.session_state.founder_logged_in:
         c1.metric("Da leggere", unread_founder)
         with c2:
             if unread_founder and st.button("✓ Segna tutte come lette", use_container_width=True):
-                db_query("UPDATE founder_notifications SET is_read=TRUE WHERE is_read=FALSE", commit=True)
+                db_query("UPDATE founder_notifications SET is_read=TRUE WHERE is_read=FALSE AND COALESCE(is_archived,FALSE)=FALSE", commit=True)
                 st.rerun()
         if not founder_notes:
             st.info("Nessuna notifica Founder.")
@@ -2073,6 +2147,11 @@ if st.session_state.founder_logged_in:
                                 commit=True,
                             )
                             notify_player(act, f"✅ Candidatura approvata. Sei stato assegnato a {role}.")
+                            db_query(
+                                "UPDATE founder_notifications SET is_archived=TRUE, is_read=TRUE WHERE event_type='application' AND activision_id=? AND COALESCE(is_archived,FALSE)=FALSE",
+                                (act,),
+                                commit=True,
+                            )
                             st.rerun()
                     with d:
                         st.write("")
@@ -2083,6 +2162,11 @@ if st.session_state.founder_logged_in:
                                 commit=True,
                             )
                             notify_player(act, "❌ La candidatura non è stata approvata.")
+                            db_query(
+                                "UPDATE founder_notifications SET is_archived=TRUE, is_read=TRUE WHERE event_type='application' AND activision_id=? AND COALESCE(is_archived,FALSE)=FALSE",
+                                (act,),
+                                commit=True,
+                            )
                             st.rerun()
 
     elif founder_page == "📸 Prove Player":
