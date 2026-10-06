@@ -1,0 +1,2 @@
+Apri CMD in questa cartella e lancia:
+firebase.cmd deploy --only hosting

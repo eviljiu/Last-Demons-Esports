@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="it"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Last Demons · Notifiche</title>
+<style>
+body{margin:0;background:#07080b;color:#fff;font-family:Arial,sans-serif;display:grid;place-items:center;min-height:100vh}
+.card{width:min(520px,88vw);padding:28px;border:1px solid #8d1720;border-radius:24px;background:#0d0f13;text-align:center}
+h1{letter-spacing:3px} h1 span{color:#f3192d} p{color:#c8cbd2;line-height:1.5}
+button,a{box-sizing:border-box;width:100%;display:block;border:0;border-radius:12px;padding:15px;margin-top:12px;font-weight:800;font-size:16px;text-decoration:none;cursor:pointer}
+button{background:#f71931;color:white} a{background:#292c32;color:white} #status{margin-top:18px}
+.small{font-size:12px;color:#727985;margin-top:22px}
+</style></head><body><main class="card">
+<h1>LAST <span>DEMONS</span></h1>
+<p>Attiva le notifiche del tuo dispositivo. Il permesso viene richiesto dal dominio Firebase dedicato alle push.</p>
+<button id="enable">🔔 ATTIVA NOTIFICHE</button>
+<a id="back" href="https://last-demons-esports-zs3kcunxuyc4lxix4olw8.streamlit.app/">TORNA ALL'APP</a>
+<div id="status"></div><div class="small">Dopo la conferma tornerai automaticamente all'app.</div>
+</main>
+<script src="https://www.gstatic.com/firebasejs/11.0.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/11.0.2/firebase-messaging-compat.js"></script>
+<script>
+firebase.initializeApp({
+  apiKey: "AIzaSyDKe8SyAjMfDY9UavENY5ywcVyK_JZetWE",
+  authDomain: "last-demons.firebaseapp.com",
+  projectId: "last-demons",
+  storageBucket: "last-demons.firebasestorage.app",
+  messagingSenderId: "36761061003",
+  appId: "1:36761061003:web:dec18c5ee7757beb1e768e"
+});
+const messaging=firebase.messaging();
+const FALLBACK="https://last-demons-esports-zs3kcunxuyc4lxix4olw8.streamlit.app/";
+const hash=new URLSearchParams(location.hash.slice(1));
+const assertion=hash.get("a")||"";
+let returnUrl=hash.get("r")||FALLBACK;
+// Security: only allow HTTPS return destinations. Streamlit public URL is the fallback.
+try {
+  const u=new URL(returnUrl);
+  if(u.protocol!=="https:") throw new Error("bad protocol");
+} catch(_) { returnUrl=FALLBACK; }
+document.getElementById("back").href=returnUrl;
+const status=document.getElementById("status");
+document.getElementById("enable").onclick=async()=>{
+  try {
+    if(!assertion) throw new Error("Link di attivazione scaduto o non valido.");
+    const permission=await Notification.requestPermission();
+    if(permission!=="granted") throw new Error("Permesso notifiche non concesso.");
+    const registration=await navigator.serviceWorker.register("/firebase-messaging-sw.js",{scope:"/"});
+    const token=await messaging.getToken({vapidKey:"BP57184jsi7pZ6CatNnkwLqxLDYpAkSilBVnIFl7GwGKl0-QAZYiGVQ_2N5-vD4hCJaFlhuHd6Tcbo0v7b0aCJs",serviceWorkerRegistration:registration});
+    if(!token) throw new Error("Token notifiche non disponibile.");
+    const r=await fetch("https://eroqddxxlfjdopxyftml.supabase.co/functions/v1/register-push",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({assertion:assertion,fcm_token:token,user_agent:navigator.userAgent})});
+    if(!r.ok) throw new Error("Registrazione server non riuscita ("+r.status+").");
+    history.replaceState(null,"",location.pathname);
+    status.textContent="✅ Notifiche attivate. Ritorno all'app…";
+    setTimeout(()=>location.replace(returnUrl),1200);
+  } catch(e) {
+    status.textContent="⚠️ "+(e?.message||"Errore durante l'attivazione.");
+  }
+};
+</script></body></html>
