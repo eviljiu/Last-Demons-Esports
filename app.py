@@ -2201,6 +2201,15 @@ if st.session_state.founder_logged_in:
                         elif not is_read and st.button("✓ Letta", key=f"founder_note_{nid}", use_container_width=True):
                             db_query("UPDATE founder_notifications SET is_read=TRUE WHERE id=?", (nid,), commit=True)
                             st.rerun()
+                    actions1, actions2 = st.columns(2)
+                    with actions1:
+                        if st.button("🗃️ Archivia", key=f"founder_archive_{nid}", use_container_width=True):
+                            db_query("UPDATE founder_notifications SET is_archived=TRUE, is_read=TRUE WHERE id=?", (nid,), commit=True)
+                            st.rerun()
+                    with actions2:
+                        if st.button("🗑️ Elimina", key=f"founder_delete_{nid}", use_container_width=True):
+                            db_query("DELETE FROM founder_notifications WHERE id=?", (nid,), commit=True)
+                            st.rerun()
 
     elif founder_page == "📢 Comunicazioni":
         st.markdown('<div class="ld-section">COMUNICAZIONI ORG</div>', unsafe_allow_html=True)
