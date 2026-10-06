@@ -10,7 +10,7 @@ button{background:#f71931;color:white} a{background:#292c32;color:white} #status
 .small{font-size:12px;color:#727985;margin-top:22px}
 </style></head><body><main class="card">
 <h1>LAST <span>DEMONS</span></h1>
-<p>Attiva le notifiche del tuo dispositivo. Il permesso viene richiesto dal dominio Firebase dedicato alle push.</p>
+<p>Attiva le notifiche Last Demons su questo dispositivo per ricevere aggiornamenti importanti.</p>
 <button id="enable">🔔 ATTIVA NOTIFICHE</button>
 <a id="back" href="">TORNA ALL'APP</a>
 <div id="status"></div><div class="small">Dopo la conferma tornerai automaticamente all'app.</div>
@@ -51,7 +51,8 @@ document.getElementById("enable").onclick=async()=>{
     if(!r.ok) throw new Error("Registrazione server non riuscita ("+r.status+").");
     history.replaceState(null,"",location.pathname);
     status.textContent="✅ Notifiche attivate. Ritorno all'app…";
-    if(returnUrl){ if(returnUrl){setTimeout(()=>location.replace(returnUrl),1200);}else{status.textContent="✅ Notifiche attivate. Puoi chiudere questa scheda.";} }
+    if(returnUrl){ setTimeout(()=>location.replace(returnUrl),1200); }
+    else { status.textContent="✅ Notifiche attivate. Puoi chiudere questa scheda e tornare all'app."; }
     else { status.textContent="✅ Notifiche attivate. Puoi chiudere questa scheda e tornare all'app."; }
   } catch(e) {
     status.textContent="⚠️ "+(e?.message||"Errore durante l'attivazione.");

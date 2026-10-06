@@ -119,22 +119,31 @@ APP_PUBLIC_URL = str(st.secrets.get("APP_PUBLIC_URL", "")).strip()
 PUSH_ASSERTION_TTL_SECONDS = 300
 
 def _current_public_app_url() -> str:
+    """Resolve the actual deployed app URL used by the browser."""
+    candidates = []
     if APP_PUBLIC_URL:
-        try:
-            u = urlparse(APP_PUBLIC_URL)
-            if u.scheme == "https" and u.hostname and u.hostname.lower().endswith(".streamlit.app"):
-                return f"https://{u.hostname.lower()}/"
-        except Exception:
-            pass
+        candidates.append(APP_PUBLIC_URL)
     try:
         headers = st.context.headers
-        host = str(headers.get("X-Forwarded-Host") or headers.get("Host") or "").split(",")[0].strip()
-        hostname = host.split(":")[0].lower()
-        if hostname.endswith(".streamlit.app"):
-            return f"https://{hostname}/"
+        forwarded_host = str(headers.get("X-Forwarded-Host") or "").split(",")[0].strip()
+        host = forwarded_host or str(headers.get("Host") or "").split(",")[0].strip()
+        proto = str(headers.get("X-Forwarded-Proto") or "https").split(",")[0].strip().lower()
+        if host:
+            candidates.append(f"{proto}://{host}/")
     except Exception:
         pass
+
+    for candidate in candidates:
+        try:
+            u = urlparse(candidate)
+            hostname = (u.hostname or "").lower()
+            if u.scheme == "https" and hostname.endswith(".streamlit.app") and hostname != "share.streamlit.io":
+                netloc = u.netloc
+                return f"https://{netloc}/"
+        except Exception:
+            continue
     return ""
+
 
 REMEMBER_DAYS = 30
 REMEMBER_COOKIE = "ld_player_device"
@@ -2154,6 +2163,9 @@ if st.session_state.founder_logged_in:
                         st.markdown(f"**{html.escape(str(amsg))}**")
                         meta = f"{aact} · " if aact else ""
                         st.caption(f"{meta}{str(acreated)[:16]}")
+                        if st.button("🗑️ Elimina definitivamente", key=f"delete_archived_{anid}", use_container_width=True):
+                            db_query("DELETE FROM founder_notifications WHERE id=?", (anid,), commit=True)
+                            st.rerun()
                         st.divider()
 
         founder_notes = db_query(

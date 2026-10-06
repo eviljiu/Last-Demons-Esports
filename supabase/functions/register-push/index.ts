@@ -58,18 +58,48 @@ Deno.serve(async (req) => {
       Deno.env.get("SUPABASE_URL")!,
       Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
     );
-    const { error } = await db.from("push_subscriptions").upsert({
-      identity_type: identityType,
-      identity_id: identityId,
-      fcm_token: token,
-      user_agent: userAgent,
-      is_active: true,
-      updated_at: new Date().toISOString(),
-    }, { onConflict: "fcm_token" });
+    // Avoid PostgREST ON CONFLICT inference entirely: explicit lookup then update/insert.
+    const { data: existing, error: lookupError } = await db
+      .from("push_subscriptions")
+      .select("id")
+      .eq("identity_type", identityType)
+      .eq("identity_id", identityId)
+      .eq("fcm_token", token)
+      .limit(1);
 
-    if (error) {
-      console.error("push_subscriptions upsert:", error.message);
-      return response("Database registration failed", 500);
+    if (lookupError) {
+      console.error("push_subscriptions lookup:", lookupError.message);
+      return response(`Database lookup failed: ${lookupError.code || "db_lookup_error"}`, 500);
+    }
+
+    let writeError = null;
+    if (existing && existing.length > 0) {
+      const result = await db
+        .from("push_subscriptions")
+        .update({
+          user_agent: userAgent,
+          is_active: true,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", existing[0].id);
+      writeError = result.error;
+    } else {
+      const result = await db
+        .from("push_subscriptions")
+        .insert({
+          identity_type: identityType,
+          identity_id: identityId,
+          fcm_token: token,
+          user_agent: userAgent,
+          is_active: true,
+          updated_at: new Date().toISOString(),
+        });
+      writeError = result.error;
+    }
+
+    if (writeError) {
+      console.error("push_subscriptions write:", writeError.message);
+      return response(`Database registration failed: ${writeError.code || "db_write_error"}`, 500);
     }
 
     return new Response(JSON.stringify({ ok: true }), {
