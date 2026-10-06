@@ -1618,6 +1618,9 @@ def render_push_opt_in(identity_type: str, identity_id: str):
     # Keep the signed assertion in the URL fragment: it is read by the Firebase page in JS
     # but is not sent to Firebase Hosting as part of the HTTP request.
     return_url = _current_public_app_url()
+    # Preserve the hidden Founder route on return from Firebase.
+    if return_url and identity_type == "founder":
+        return_url = return_url.rstrip("/") + "/?founder=1"
     push_url = f"{PUSH_COMPANION_URL}#a={quote(assertion, safe='')}"
     if return_url:
         push_url += f"&r={quote(return_url, safe='')}"

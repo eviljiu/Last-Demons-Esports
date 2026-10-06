@@ -1,6 +1,8 @@
 <!doctype html>
 <html lang="it"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Last Demons · Notifiche</title>
+<link rel="manifest" href="/manifest.webmanifest">
+<meta name="theme-color" content="#07080b">
 <style>
 body{margin:0;background:#07080b;color:#fff;font-family:Arial,sans-serif;display:grid;place-items:center;min-height:100vh}
 .card{width:min(520px,88vw);padding:28px;border:1px solid #8d1720;border-radius:24px;background:#0d0f13;text-align:center}
@@ -13,6 +15,7 @@ button{background:#f71931;color:white} a{background:#292c32;color:white} #status
 <p>Attiva le notifiche Last Demons su questo dispositivo per ricevere aggiornamenti importanti.</p>
 <button id="enable">🔔 ATTIVA NOTIFICHE</button>
 <a id="back" href="">TORNA ALL'APP</a>
+<button id="install" type="button" style="display:none;background:#292c32">📲 INSTALLA LAST DEMONS</button>
 <div id="status"></div><div class="small">Dopo la conferma tornerai automaticamente all'app.</div>
 </main>
 <script src="https://www.gstatic.com/firebasejs/11.0.2/firebase-app-compat.js"></script>
@@ -105,4 +108,27 @@ enable.addEventListener("click", async () => {
     enable.disabled = false;
   }
 });
+
+let deferredInstallPrompt = null;
+const installButton = document.getElementById("install");
+window.addEventListener("beforeinstallprompt", (event) => {
+  event.preventDefault();
+  deferredInstallPrompt = event;
+  installButton.style.display = "block";
+});
+installButton.addEventListener("click", async () => {
+  if (!deferredInstallPrompt) {
+    status.textContent = "Per installare Last Demons usa il menu del browser e scegli “Aggiungi a schermata Home” o “Installa app”.";
+    return;
+  }
+  deferredInstallPrompt.prompt();
+  await deferredInstallPrompt.userChoice;
+  deferredInstallPrompt = null;
+  installButton.style.display = "none";
+});
+window.addEventListener("appinstalled", () => {
+  status.textContent = "✅ Last Demons installata sul dispositivo.";
+  installButton.style.display = "none";
+});
+
 </script></body></html>

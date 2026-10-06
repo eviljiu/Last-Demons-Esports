@@ -23,3 +23,5 @@ self.addEventListener("notificationclick",(event)=>{
   const url=event.notification?.data?.url||"https://last-demons.web.app/";
   event.waitUntil(clients.openWindow(url));
 });
+
+self.addEventListener("fetch", (event) => { /* PWA scope control */ });
