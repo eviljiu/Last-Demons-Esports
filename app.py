@@ -1837,7 +1837,7 @@ if not st.session_state.player_logged_in and not st.session_state.founder_logged
         st.markdown('<div class="ld-section">FOUNDER CONTROL ROOM</div>', unsafe_allow_html=True)
         st.subheader("🛡️ Accesso Founder")
         st.caption("Area amministrativa riservata.")
-        with st.form("founder_login_hidden"):
+        with st.form("founder_login_hidden", enter_to_submit=False):
             founder_password = st.text_input("Password Founder", type="password")
             remember_founder = st.checkbox(
                 "Ricorda questo dispositivo per 30 giorni",
@@ -1872,7 +1872,7 @@ if not st.session_state.player_logged_in and not st.session_state.founder_logged
     with left:
         if portal_mode == "🔥 REGISTRATI":
             st.subheader("🔥 Candidatura")
-            with st.form("register_v28", clear_on_submit=True):
+            with st.form("register_v28", clear_on_submit=True, enter_to_submit=False):
                 act_id = st.text_input("Activision ID", placeholder="DemonKing#1234567")
                 platform = st.selectbox("Piattaforma", ["PlayStation 5 / PS4","Xbox Series X/S / One","PC (Steam / Battle.net)"])
                 password = st.text_input("Password", type="password")
@@ -1920,7 +1920,7 @@ if not st.session_state.player_logged_in and not st.session_state.founder_logged
         else:
             st.subheader("🎮 Accesso Player")
             st.caption("L'accesso funziona solo per gli account Approved.")
-            with st.form("player_login_v28"):
+            with st.form("player_login_v28", enter_to_submit=False):
                 login_id=st.text_input("Activision ID",
                     value=st.session_state.get("checked_candidate",""),
                     placeholder="DemonKing#1234567")
@@ -2229,7 +2229,7 @@ if st.session_state.founder_logged_in:
 
     elif founder_page == "📢 Comunicazioni":
         st.markdown('<div class="ld-section">COMUNICAZIONI ORG</div>', unsafe_allow_html=True)
-        with st.form("new_announcement", clear_on_submit=True):
+        with st.form("new_announcement", clear_on_submit=True, enter_to_submit=False):
             news_title = st.text_input("Titolo")
             news_body = st.text_area("Messaggio")
             publish = st.form_submit_button("📢 PUBBLICA", type="primary", use_container_width=True)
@@ -2640,7 +2640,7 @@ if st.session_state.founder_logged_in:
             "Top Fragger, Win Rate, Rating, kill, win e match tutti a 0. "
             "I player e lo storico della stagione precedente NON vengono cancellati."
         )
-        with st.form("reset_and_new_season"):
+        with st.form("reset_and_new_season", enter_to_submit=False):
             season_name = st.text_input("Nome nuova stagione", placeholder="Season 2")
             confirm_season = st.checkbox(
                 "Confermo: voglio azzerare le classifiche e avviare una nuova stagione"
@@ -2675,7 +2675,7 @@ if st.session_state.founder_logged_in:
             "La stagione resta la stessa e i player non vengono modificati."
         )
         if current:
-            with st.form("clear_current_season_results"):
+            with st.form("clear_current_season_results", enter_to_submit=False):
                 clear_check = st.checkbox(
                     f"Confermo di voler azzerare tutti i risultati di {current[1]}"
                 )
@@ -2714,7 +2714,7 @@ if st.session_state.founder_logged_in:
                 f"{s[1]} · ID {s[0]}": (s[0], s[1])
                 for s in past_seasons
             }
-            with st.form("delete_past_season"):
+            with st.form("delete_past_season", enter_to_submit=False):
                 selected_past = st.selectbox(
                     "Stagione passata da eliminare",
                     list(past_map.keys()),
@@ -3155,7 +3155,7 @@ elif player_page == "📸 Carica Prova":
         unsafe_allow_html=True,
     )
 
-    with st.form("player_proof_form", clear_on_submit=True):
+    with st.form("player_proof_form", clear_on_submit=True, enter_to_submit=False):
         c1, c2 = st.columns(2)
         with c1:
             kills = st.number_input("💀 Kill", min_value=0, step=1, value=0)
