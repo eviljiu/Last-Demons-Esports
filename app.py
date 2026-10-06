@@ -1,5 +1,5 @@
 import os
-from urllib.parse import quote, unquote
+from urllib.parse import quote, unquote, urlparse
 import re
 import hashlib
 import base64
@@ -115,8 +115,27 @@ PUSH_REGISTRATION_SECRET = str(st.secrets.get("PUSH_REGISTRATION_SECRET", "")).s
 PUSH_SEND_SECRET = str(st.secrets.get("PUSH_SEND_SECRET", "")).strip()
 PUSH_ENABLED = bool(PUSH_REGISTRATION_SECRET and PUSH_SEND_SECRET)
 PUSH_COMPANION_URL = "https://last-demons.web.app/"
-APP_PUBLIC_URL = str(st.secrets.get("APP_PUBLIC_URL", "https://last-demons-esports-zs3kcunxuyc4lxix4olw8.streamlit.app/")).strip()
+APP_PUBLIC_URL = str(st.secrets.get("APP_PUBLIC_URL", "")).strip()
 PUSH_ASSERTION_TTL_SECONDS = 300
+
+def _current_public_app_url() -> str:
+    if APP_PUBLIC_URL:
+        try:
+            u = urlparse(APP_PUBLIC_URL)
+            if u.scheme == "https" and u.hostname and u.hostname.lower().endswith(".streamlit.app"):
+                return f"https://{u.hostname.lower()}/"
+        except Exception:
+            pass
+    try:
+        headers = st.context.headers
+        host = str(headers.get("X-Forwarded-Host") or headers.get("Host") or "").split(",")[0].strip()
+        hostname = host.split(":")[0].lower()
+        if hostname.endswith(".streamlit.app"):
+            return f"https://{hostname}/"
+    except Exception:
+        pass
+    return ""
+
 REMEMBER_DAYS = 30
 REMEMBER_COOKIE = "ld_player_device"
 
@@ -541,9 +560,11 @@ letter-spacing:.10em;text-transform:uppercase;line-height:1.2}
     border-radius:12px !important;
     font-size:clamp(1.02rem,2.4vw,1.28rem) !important;
 }
-.ld-founder-shot{position:relative;display:flex;justify-content:center;align-items:center;min-width:180px;max-width:330px;margin-left:auto;padding-left:38px;overflow:visible}
+.ld-founder-shot{position:relative;display:flex;justify-content:center;align-items:stretch;min-width:180px;max-width:330px;margin-left:auto;padding-left:42px;overflow:visible}
 .ld-founder-shot img{display:block;width:100%;height:auto;max-height:430px;object-fit:contain;object-position:center;border-radius:18px;border:1px solid rgba(239,24,40,.35);box-shadow:0 12px 35px rgba(0,0,0,.35)}
-.ld-founder-tag{position:absolute;left:2px;top:50%;transform:translateY(-50%);writing-mode:vertical-rl;text-orientation:mixed;padding:13px 8px;border-radius:7px;background:linear-gradient(180deg,rgba(7,7,9,.96),rgba(25,0,3,.92));border-left:2px solid #ef1828;border-right:1px solid rgba(239,24,40,.5);color:#fff;font-family:Impact,'Arial Narrow',sans-serif;font-weight:950;letter-spacing:.17em;font-size:.84rem;line-height:1;text-shadow:0 0 12px rgba(239,24,40,.75);box-shadow:0 8px 24px rgba(0,0,0,.42)}
+.ld-founder-tag{position:absolute;left:2px;top:0;bottom:0;width:34px;display:flex;align-items:center;justify-content:center;border-radius:8px;background:linear-gradient(180deg,rgba(7,7,9,.98),rgba(55,0,7,.94));border-left:2px solid #ef1828;border-right:1px solid rgba(239,24,40,.5);box-shadow:0 8px 24px rgba(0,0,0,.42);overflow:hidden}
+.ld-founder-tag span{writing-mode:vertical-rl;text-orientation:mixed;color:#fff;font-family:Impact,'Arial Narrow',sans-serif;font-weight:950;letter-spacing:.22em;font-size:.84rem;line-height:1;text-shadow:0 0 12px rgba(239,24,40,.75)}
+.ld-founder-name{position:absolute;left:52px;right:10px;bottom:10px;text-align:center;padding:7px 10px;border-radius:9px;background:rgba(4,5,7,.78);border:1px solid rgba(239,24,40,.38);backdrop-filter:blur(5px);color:#fff;font-family:Impact,'Arial Narrow',sans-serif;font-size:.92rem;font-weight:900;letter-spacing:.14em;text-shadow:0 0 12px rgba(239,24,40,.75)}
 .ld-ops-wrap{margin:12px 0 20px;padding:16px;border:1px solid rgba(239,24,40,.18);border-radius:18px;background:linear-gradient(145deg,rgba(20,20,22,.96),rgba(8,8,10,.96));box-shadow:0 12px 32px rgba(0,0,0,.22)}
 .ld-ops-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px}.ld-ops-title{font-weight:950;letter-spacing:.08em;font-size:1rem}.ld-ops-badge{font-size:.72rem;font-weight:900;padding:5px 9px;border-radius:999px;background:rgba(239,24,40,.13);border:1px solid rgba(239,24,40,.35);color:#ff6672}
 .ld-alert-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.ld-alert-card{padding:12px 13px;border-radius:13px;background:rgba(255,255,255,.035);border:1px solid rgba(255,255,255,.07)}.ld-alert-card.warn{border-color:rgba(255,173,51,.22)}.ld-alert-card.down{border-color:rgba(239,24,40,.28)}.ld-alert-card.ok{grid-column:1/-1;border-color:rgba(68,214,125,.22)}.ld-alert-name{font-weight:900;color:#fff;margin-bottom:4px;overflow-wrap:anywhere}.ld-alert-meta{font-size:.78rem;color:#a9a9ae;line-height:1.4}.ld-alert-accent{color:#ff5b68;font-weight:800}
@@ -601,6 +622,23 @@ letter-spacing:.10em;text-transform:uppercase;line-height:1.2}
     transform:translateY(-50%) !important;
   }
 }
+
+/* V3.5.1 founder portrait final mobile layout */
+@media(max-width:760px){
+  .ld-hero .ld-founder-shot{position:relative!important;width:min(100%,310px)!important;max-width:310px!important;padding-left:38px!important;align-items:stretch!important}
+  .ld-hero .ld-founder-shot img{width:100%!important;height:auto!important;max-height:none!important;object-fit:contain!important}
+  .ld-hero .ld-founder-tag{left:0!important;top:0!important;bottom:0!important;width:31px!important;height:auto!important;transform:none!important;padding:0!important}
+  .ld-hero .ld-founder-tag span{font-size:.74rem!important;letter-spacing:.20em!important}
+  .ld-hero .ld-founder-name{left:46px!important;right:8px!important;bottom:8px!important;font-size:.78rem!important;padding:6px 8px!important}
+}
+
+/* V3.5.2 shared Player + Founder mobile/performance polish */
+@media(max-width:760px){
+  [data-testid="stForm"]{padding:.75rem!important}
+  [data-testid="stMetric"]{min-height:auto!important}
+  .stButton>button,.stLinkButton>a{min-height:44px!important}
+  [data-testid="stSidebar"] [role="radiogroup"] label{padding-top:.52rem!important;padding-bottom:.52rem!important}
+}
 </style>
     """,
     unsafe_allow_html=True,
@@ -619,7 +657,8 @@ def hero():
             </div>
             <div class="ld-founder-shot">
                 <img src="{FOUNDER_PORTRAIT_DATA_URI}" alt="Founder Last Demons">
-                <div class="ld-founder-tag">FOUNDER</div>
+                <div class="ld-founder-tag"><span>FOUNDER</span></div>
+                <div class="ld-founder-name">Diablo_TV</div>
             </div>
         </div>
         """,
@@ -797,6 +836,19 @@ def init_db():
             "ON founder_notifications(is_archived, created_at DESC)"
         )
         cur.execute(
+            """
+            UPDATE founder_notifications fn
+            SET is_archived=TRUE, is_read=TRUE
+            WHERE fn.event_type='application'
+              AND COALESCE(fn.is_archived,FALSE)=FALSE
+              AND EXISTS (
+                  SELECT 1 FROM players p
+                  WHERE p.activision_id=fn.activision_id
+                    AND p.status IN ('Approved','Rejected')
+              )
+            """
+        )
+        cur.execute(
             "CREATE INDEX IF NOT EXISTS idx_submissions_selection_leaderboard "
             "ON submissions(season_id, month_year, status, activision_id)"
         )
@@ -853,7 +905,11 @@ def _db_read_cached(query: str, params_tuple: tuple, version_key: tuple):
 
 
 def _session_read_cache():
-    return st.session_state.setdefault("_ld_hot_reads", {})
+    hot = st.session_state.setdefault("_ld_hot_reads", {})
+    # Keep the per-session cache bounded for long-lived Founder and Player sessions.
+    if len(hot) > 160:
+        hot.clear()
+    return hot
 
 def clear_read_caches(changed_query: str = ""):
     """Clear this session and invalidate only tables changed by a committed write."""
@@ -871,11 +927,12 @@ def db_query(query, params=(), fetchall=False, commit=False):
     is_select = normalized.startswith("SELECT") and not commit
 
     if is_select:
-        key = (query, params)
+        version_key = _query_version_key(query)
+        key = (query, params, version_key)
         hot = _session_read_cache()
         if key in hot:
             return hot[key] if fetchall else None
-        rows = _db_read_cached(query, params, _query_version_key(query))
+        rows = _db_read_cached(query, params, version_key)
         hot[key] = rows
         return rows if fetchall else None
 
@@ -1492,13 +1549,16 @@ def render_push_opt_in(identity_type: str, identity_id: str):
         return
     # Keep the signed assertion in the URL fragment: it is read by the Firebase page in JS
     # but is not sent to Firebase Hosting as part of the HTTP request.
-    push_url = f"{PUSH_COMPANION_URL}#a={quote(assertion, safe='')}&r={quote(APP_PUBLIC_URL, safe='')}"
+    return_url = _current_public_app_url()
+    push_url = f"{PUSH_COMPANION_URL}#a={quote(assertion, safe='')}"
+    if return_url:
+        push_url += f"&r={quote(return_url, safe='')}"
     st.link_button(
         "🔔 Attiva notifiche su questo dispositivo",
         push_url,
         use_container_width=True,
     )
-    st.caption("Si apre la pagina sicura Last Demons Push. L'autorizzazione dura solo pochi minuti e non contiene password o secret.")
+    st.caption("Attiva gli avvisi Last Demons su questo dispositivo.")
 
 
 
@@ -1848,11 +1908,11 @@ def _nav_to(state_key: str, page: str):
 
 def _badge_label(label: str, count: int) -> str:
     count = int(count or 0)
-    return f"{label}  🔴 {count}" if count > 0 else label
+    return f"{label}                              • {count}" if count > 0 else label
 
 
 def _base_nav_label(value: str) -> str:
-    return re.sub(r"\s+🔴\s+\d+$", "", value or "")
+    return re.sub(r"\s+•\s+\d+$", "", value or "")
 
 
 # ============================================================
@@ -2172,25 +2232,56 @@ if st.session_state.founder_logged_in:
     elif founder_page == "📸 Prove Player":
         st.markdown('<div class="ld-section">ARCHIVIO PROVE PER ACTIVISION ID</div>', unsafe_allow_html=True)
 
+
+        pending_by_sender = db_query(
+            """
+            SELECT activision_id, COUNT(*), MAX(timestamp)
+            FROM submissions
+            WHERE status='Pending'
+            GROUP BY activision_id
+            ORDER BY MAX(timestamp) DESC
+            """,
+            fetchall=True,
+        ) or []
+        proof_search = st.text_input(
+            "🔎 Cerca chi ha inviato la prova",
+            placeholder="Activision ID...",
+            key="founder_proof_search_v350",
+        ).strip().lower()
+        if pending_by_sender:
+            st.markdown("### 🔥 Da valutare")
+            for sender_id, pending_count, last_sent in pending_by_sender:
+                if proof_search and proof_search not in str(sender_id).lower():
+                    continue
+                pc1, pc2 = st.columns([4,1])
+                with pc1:
+                    st.markdown(f"**🎮 {html.escape(str(sender_id))}** · {int(pending_count)} {'prova' if int(pending_count)==1 else 'prove'}")
+                    st.caption(f"Ultimo invio: {str(last_sent)[:16]}")
+                with pc2:
+                    if st.button("Apri →", key=f"proof_sender_{sender_id}", use_container_width=True):
+                        st.session_state["proof_sender_focus_v350"] = str(sender_id)
+                        st.rerun()
+        else:
+            st.success("✅ Nessuna prova in attesa.")
+
         ids = [
             r[0]
             for r in db_query(
-                """
-                SELECT activision_id
-                FROM players
-                WHERE status='Approved'
-                ORDER BY LOWER(activision_id)
-                """,
+                "SELECT DISTINCT activision_id FROM submissions ORDER BY LOWER(activision_id)",
                 fetchall=True,
             ) or []
         ]
+        if proof_search:
+            ids = [x for x in ids if proof_search in str(x).lower()]
 
         if not ids:
             st.info("Nessuna prova caricata.")
         else:
             f1, f2 = st.columns([2, 1])
             with f1:
-                selected = st.selectbox("🎮 Activision ID", ids)
+                focus_sender = st.session_state.pop("proof_sender_focus_v350", None)
+                focus_index = ids.index(focus_sender) if focus_sender in ids else 0
+                selected = st.selectbox("🎮 Activision ID", ids, index=focus_index)
             with f2:
                 proof_filter = st.selectbox(
                     "Stato",

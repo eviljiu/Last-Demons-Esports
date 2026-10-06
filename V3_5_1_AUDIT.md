@@ -1,0 +1,13 @@
+# V3.5.1 Deep Audit
+- Python syntax/compile: OK
+- Duplicate function definitions: none
+- Fixed cross-session stale hot-cache key by including table version key
+- Verified table detection uses real word-boundary regex
+- Removed obsolete Streamlit return URL from package
+- Founder resolved-candidate notifications auto-archive
+- Founder proof sender overview/search retained
+- Push caption cleaned
+- Founder public/register portrait: contain/no crop on mobile
+- Added Diablo_TV bottom overlay
+- Founder vertical label now spans full portrait height
+- Existing DB/storage safety and image validation retained

@@ -51,7 +51,7 @@ document.getElementById("enable").onclick=async()=>{
     if(!r.ok) throw new Error("Registrazione server non riuscita ("+r.status+").");
     history.replaceState(null,"",location.pathname);
     status.textContent="✅ Notifiche attivate. Ritorno all'app…";
-    if(returnUrl){ setTimeout(()=>location.replace(returnUrl),1200); }
+    if(returnUrl){ if(returnUrl){setTimeout(()=>location.replace(returnUrl),1200);}else{status.textContent="✅ Notifiche attivate. Puoi chiudere questa scheda.";} }
     else { status.textContent="✅ Notifiche attivate. Puoi chiudere questa scheda e tornare all'app."; }
   } catch(e) {
     status.textContent="⚠️ "+(e?.message||"Errore durante l'attivazione.");
