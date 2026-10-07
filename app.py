@@ -1135,7 +1135,7 @@ def remember_device_script(token: str):
     components.html(
         f"""<script>
         try {{
-          localStorage.setItem({json.dumps(REMEMBER_COOKIE)}, {json.dumps(token)});
+          window.parent.localStorage.setItem({json.dumps(REMEMBER_COOKIE)}, {json.dumps(token)});
         }} catch(e) {{}}
         </script>""",
         height=0,
@@ -1151,7 +1151,7 @@ def forget_device_script():
     components.html(
         f"""<script>
         try {{
-          localStorage.removeItem({json.dumps(REMEMBER_COOKIE)});
+          window.parent.localStorage.removeItem({json.dumps(REMEMBER_COOKIE)});
         }} catch(e) {{}}
         </script>""",
         height=0,
@@ -1161,15 +1161,15 @@ def forget_device_script():
 def mark_registered_device_script():
     """Remember that this browser has already completed player registration."""
     st.query_params["registered_device"] = "1"
+    try:
+        if "register" in st.query_params:
+            del st.query_params["register"]
+    except Exception:
+        pass
     components.html(
         f"""<script>
         try {{
-          const key = {json.dumps(REGISTERED_DEVICE_MARKER)};
-          // Streamlit components may run in a separate iframe. Write the
-          // marker to both storages and keep a small first-party cookie too.
-          localStorage.setItem(key, "1");
-          try {{ window.parent.localStorage.setItem(key, "1"); }} catch(e) {{}}
-          document.cookie = key + "=1; Max-Age=" + (60*60*24*365) + "; Path=/; SameSite=Lax";
+          window.parent.localStorage.setItem({json.dumps(REGISTERED_DEVICE_MARKER)}, "1");
         }} catch(e) {{}}
         </script>""",
         height=0,
@@ -1183,10 +1183,7 @@ def restore_registered_device_script():
         try {{
           const key = {json.dumps(REGISTERED_DEVICE_MARKER)};
           const u = new URL(window.parent.location.href);
-          let remembered = localStorage.getItem(key) === "1";
-          try {{ remembered = remembered || window.parent.localStorage.getItem(key) === "1"; }} catch(e) {{}}
-          try {{ remembered = remembered || document.cookie.split("; ").some(v => v === key + "=1"); }} catch(e) {{}}
-          if (remembered && !u.searchParams.get("registered_device")) {{
+          if (window.parent.localStorage.getItem(key) === "1" && !u.searchParams.get("registered_device")) {{
             u.searchParams.set("registered_device", "1");
             window.parent.location.replace(u.toString());
           }}
@@ -1202,7 +1199,7 @@ def restore_device_script():
         f"""<script>
         try {{
           const key = {json.dumps(REMEMBER_COOKIE)};
-          const token = localStorage.getItem(key);
+          const token = window.parent.localStorage.getItem(key);
           const u = new URL(window.parent.location.href);
           if (token && !u.searchParams.get("device_token")) {{
             u.searchParams.set("device_token", token);
@@ -2577,24 +2574,35 @@ restore_registered_device_script()
 try_restore_player_session()
 
 if not st.session_state.player_logged_in:
-    hero()
+    # A registered device opens directly on the lightweight login view.
+    # The full hero and roster are intentionally skipped to reduce first paint time.
+    registered_device = st.query_params.get("registered_device") == "1"
+    registration_requested = st.query_params.get("register") == "1"
+    fast_login_view = registered_device or not registration_requested
+    if fast_login_view:
+        st.markdown(
+            '<div class="ld-section">ACCESSO PLAYER</div>',
+            unsafe_allow_html=True,
+        )
+    else:
+        hero()
 
     st.markdown(
         '<div class="ld-section">ACCESSO ORGANIZZAZIONE</div>',
         unsafe_allow_html=True,
     )
 
-    registered_device = st.query_params.get("registered_device") == "1"
     if registered_device:
         st.info("Questo dispositivo è già registrato. Accedi con il tuo account Player.")
         portal_mode = "🎮 ACCEDI"
+    elif registration_requested:
+        portal_mode = "🔥 REGISTRATI"
     else:
-        portal_mode = st.radio(
-            "PORTALE",
-            ["🔥 REGISTRATI", "🎮 ACCEDI"],
-            horizontal=True,
-            key="public_portal_mode_v28",
-        )
+        # Safe fallback for devices registered before persistent markers existed.
+        portal_mode = "🎮 ACCEDI"
+        if st.button("🔥 NUOVO DISPOSITIVO · REGISTRATI", use_container_width=True):
+            st.query_params["register"] = "1"
+            st.rerun()
     left, right = st.columns([1.25, 1], gap="large")
 
     with left:
@@ -2689,25 +2697,26 @@ if not st.session_state.player_logged_in:
             <b>02</b> · Attendi l'approvazione.<br><br>
             <b>03</b> · Entra da <b>ACCEDI</b>.<br><br>
             <b>04</b> · Accedi al Command Center.</div></div>""",unsafe_allow_html=True)
-        st.markdown("### 👥 Roster ufficiale")
-        roster=db_query("""SELECT activision_id,selection,org_role,profile_image_url
-            FROM players WHERE status='Approved'
-            ORDER BY selection,LOWER(activision_id) LIMIT 12""",fetchall=True) or []
-        if not roster: st.caption("Il roster apparirà qui dopo le prime approvazioni.")
-        else:
-            for act,sel,role,avatar in roster:
-                with st.container(border=True):
-                    c1,c2=st.columns([1,4])
-                    with c1:
-                        if avatar: st.image(avatar,width=52)
-                        else: st.write("👤")
-                    with c2:
-                        st.markdown(f"**{html.escape(str(act))}**")
-                        safe_role = html.escape(str(role or "Player"))
-                        safe_sel = html.escape(str(sel or "Non Assegnato"))
-                        st.markdown(f'<span class="role-pill">{safe_role}</span> '
-                                    f'<span class="division-pill">{safe_sel}</span>',
-                                    unsafe_allow_html=True)
+        if not fast_login_view:
+            st.markdown("### 👥 Roster ufficiale")
+            roster=db_query("""SELECT activision_id,selection,org_role,profile_image_url
+                FROM players WHERE status='Approved'
+                ORDER BY selection,LOWER(activision_id) LIMIT 12""",fetchall=True) or []
+            if not roster: st.caption("Il roster apparirà qui dopo le prime approvazioni.")
+            else:
+                for act,sel,role,avatar in roster:
+                    with st.container(border=True):
+                        c1,c2=st.columns([1,4])
+                        with c1:
+                            if avatar: st.image(avatar,width=52)
+                            else: st.write("👤")
+                        with c2:
+                            st.markdown(f"**{html.escape(str(act))}**")
+                            safe_role = html.escape(str(role or "Player"))
+                            safe_sel = html.escape(str(sel or "Non Assegnato"))
+                            st.markdown(f'<span class="role-pill">{safe_role}</span> '
+                                        f'<span class="division-pill">{safe_sel}</span>',
+                                        unsafe_allow_html=True)
 
 
     st.stop()
