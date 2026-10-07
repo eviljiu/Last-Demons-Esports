@@ -1164,7 +1164,12 @@ def mark_registered_device_script():
     components.html(
         f"""<script>
         try {{
-          localStorage.setItem({json.dumps(REGISTERED_DEVICE_MARKER)}, "1");
+          const key = {json.dumps(REGISTERED_DEVICE_MARKER)};
+          // Streamlit components may run in a separate iframe. Write the
+          // marker to both storages and keep a small first-party cookie too.
+          localStorage.setItem(key, "1");
+          try {{ window.parent.localStorage.setItem(key, "1"); }} catch(e) {{}}
+          document.cookie = key + "=1; Max-Age=" + (60*60*24*365) + "; Path=/; SameSite=Lax";
         }} catch(e) {{}}
         </script>""",
         height=0,
@@ -1178,7 +1183,10 @@ def restore_registered_device_script():
         try {{
           const key = {json.dumps(REGISTERED_DEVICE_MARKER)};
           const u = new URL(window.parent.location.href);
-          if (localStorage.getItem(key) === "1" && !u.searchParams.get("registered_device")) {{
+          let remembered = localStorage.getItem(key) === "1";
+          try {{ remembered = remembered || window.parent.localStorage.getItem(key) === "1"; }} catch(e) {{}}
+          try {{ remembered = remembered || document.cookie.split("; ").some(v => v === key + "=1"); }} catch(e) {{}}
+          if (remembered && !u.searchParams.get("registered_device")) {{
             u.searchParams.set("registered_device", "1");
             window.parent.location.replace(u.toString());
           }}
