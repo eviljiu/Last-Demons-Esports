@@ -532,6 +532,24 @@ st.markdown(
 }
 [data-testid="stSidebar"] img { transition: none !important; }
 
+/* Muted translucent red cards for the sidebar navigation. */
+[data-testid="stSidebar"] .stButton > button {
+    background: linear-gradient(135deg, rgba(91,17,27,.68), rgba(48,10,17,.62)) !important;
+    border: 1px solid rgba(184,55,70,.40) !important;
+    color: #f7e9eb !important;
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.035), 0 5px 14px rgba(0,0,0,.18) !important;
+}
+[data-testid="stSidebar"] .stButton > button:hover {
+    background: linear-gradient(135deg, rgba(116,22,34,.76), rgba(61,11,19,.70)) !important;
+    border-color: rgba(225,75,91,.58) !important;
+}
+[data-testid="stSidebar"] .stButton > button[kind="primary"],
+[data-testid="stSidebar"] [data-testid="baseButton-primary"] {
+    background: linear-gradient(135deg, rgba(128,24,37,.82), rgba(67,12,21,.76)) !important;
+    border-color: rgba(239,94,108,.68) !important;
+    box-shadow: inset 0 0 0 1px rgba(255,105,118,.08), 0 6px 18px rgba(75,4,12,.28) !important;
+}
+
 
 .role-pill,.division-pill{display:inline-block;padding:4px 9px;margin:3px 4px 0 0;border-radius:999px;
 font-family:"Arial Narrow","Roboto Condensed","Trebuchet MS",sans-serif;font-size:.72rem;font-weight:900;
