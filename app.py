@@ -154,6 +154,7 @@ def _current_public_app_url() -> str:
 
 REMEMBER_DAYS = 30
 REMEMBER_COOKIE = "ld_player_device"
+REGISTERED_DEVICE_MARKER = "ld_registered_device"
 
 def validate_storage_config():
     missing = []
@@ -1151,6 +1152,36 @@ def forget_device_script():
         f"""<script>
         try {{
           localStorage.removeItem({json.dumps(REMEMBER_COOKIE)});
+        }} catch(e) {{}}
+        </script>""",
+        height=0,
+    )
+
+
+def mark_registered_device_script():
+    """Remember that this browser has already completed player registration."""
+    st.query_params["registered_device"] = "1"
+    components.html(
+        f"""<script>
+        try {{
+          localStorage.setItem({json.dumps(REGISTERED_DEVICE_MARKER)}, "1");
+        }} catch(e) {{}}
+        </script>""",
+        height=0,
+    )
+
+
+def restore_registered_device_script():
+    """Expose the local registration marker to Streamlit once on app open."""
+    components.html(
+        f"""<script>
+        try {{
+          const key = {json.dumps(REGISTERED_DEVICE_MARKER)};
+          const u = new URL(window.parent.location.href);
+          if (localStorage.getItem(key) === "1" && !u.searchParams.get("registered_device")) {{
+            u.searchParams.set("registered_device", "1");
+            window.parent.location.replace(u.toString());
+          }}
         }} catch(e) {{}}
         </script>""",
         height=0,
@@ -2534,6 +2565,7 @@ st.session_state.pop("founder_logged_in", None)
 for legacy_param in ("founder", "founder_token"):
     if legacy_param in st.query_params:
         del st.query_params[legacy_param]
+restore_registered_device_script()
 try_restore_player_session()
 
 if not st.session_state.player_logged_in:
@@ -2544,12 +2576,17 @@ if not st.session_state.player_logged_in:
         unsafe_allow_html=True,
     )
 
-    portal_mode = st.radio(
-        "PORTALE",
-        ["🔥 REGISTRATI", "🎮 ACCEDI"],
-        horizontal=True,
-        key="public_portal_mode_v28",
-    )
+    registered_device = st.query_params.get("registered_device") == "1"
+    if registered_device:
+        st.info("Questo dispositivo è già registrato. Accedi con il tuo account Player.")
+        portal_mode = "🎮 ACCEDI"
+    else:
+        portal_mode = st.radio(
+            "PORTALE",
+            ["🔥 REGISTRATI", "🎮 ACCEDI"],
+            horizontal=True,
+            key="public_portal_mode_v28",
+        )
     left, right = st.columns([1.25, 1], gap="large")
 
     with left:
@@ -2583,6 +2620,7 @@ if not st.session_state.player_logged_in:
                                  ("application", clean_id, "Nuova candidatura ricevuta.")),
                             ])
                             st.session_state["checked_candidate"]=clean_id
+                            mark_registered_device_script()
                             _send_push_async("founder", "founder", "Last Demons · Organizzazione", "Nuova candidatura ricevuta.")
                             st.success("Candidatura inviata. Attendi l'approvazione Founder.")
                         except psycopg2.IntegrityError:
@@ -2628,6 +2666,7 @@ if not st.session_state.player_logged_in:
                         st.session_state.player_logged_in=True
                         st.session_state.player_id=candidate[1]
                         st.session_state["auth_stamp"] = auth_stamp(candidate)
+                        mark_registered_device_script()
                         if remember_device:
                             remember_device_script(make_remember_token(candidate[1]))
                         else:
