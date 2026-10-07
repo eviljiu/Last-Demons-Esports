@@ -276,6 +276,21 @@ st.markdown(
         --ld-muted: #9ca3af;
     }
 
+    @keyframes ldNotificationBounce {
+        0%, 100% { transform: translateY(0) scale(1); }
+        45% { transform: translateY(-4px) scale(1.08); }
+        70% { transform: translateY(1px) scale(.98); }
+    }
+
+    .ld-notification-pulse {
+        display: inline-block;
+        color: #ff1f2d;
+        font-size: 1.18rem;
+        line-height: 1;
+        animation: ldNotificationBounce 1.05s ease-in-out infinite;
+        filter: drop-shadow(0 0 5px rgba(255,31,45,.65));
+    }
+
     html, body, [class*="css"] {
         font-family: Inter, Arial, sans-serif;
     }
@@ -2067,6 +2082,23 @@ def _select_sidebar_page(page):
 def _sidebar_page_button(page):
     count = int(counts.get(page, 0) or 0)
     label = f"{page} · {count}" if count else page
+    # Keep the unread indicator lightweight: it is purely visual and rendered
+    # only for notification entries when unread items exist.
+    if page in {"🔔 Notifiche organizzazione", "🔔 Notifiche"} and count > 0:
+        button_col, badge_col = st.sidebar.columns([0.88, 0.12], gap="small",
+                                                     vertical_alignment="center")
+        with button_col:
+            st.button(
+                label, key=f"ld_sidebar_page_{page}", use_container_width=True,
+                type="primary" if selected_page == page else "secondary",
+                on_click=_select_sidebar_page, args=(page,),
+            )
+        with badge_col:
+            st.markdown(
+                '<span class="ld-notification-pulse" title="Notifiche non lette">❗</span>',
+                unsafe_allow_html=True,
+            )
+        return
     st.sidebar.button(
         label, key=f"ld_sidebar_page_{page}", use_container_width=True,
         type="primary" if selected_page == page else "secondary",
