@@ -668,6 +668,20 @@ letter-spacing:.10em;text-transform:uppercase;line-height:1.2}
   [data-testid="stMetric"]{min-height:auto!important}
   .stButton>button,.stLinkButton>a{min-height:44px!important}
   [data-testid="stSidebar"] [role="radiogroup"] label{padding-top:.52rem!important;padding-bottom:.52rem!important}
+  /* Keep the unread badge beside the notification button on narrow screens. */
+  [data-testid="stSidebar"] [data-testid="stHorizontalBlock"]{
+    flex-direction:row!important;
+    flex-wrap:nowrap!important;
+    align-items:center!important;
+    gap:.35rem!important;
+  }
+  [data-testid="stSidebar"] [data-testid="stHorizontalBlock"] > div{
+    min-width:0!important;
+  }
+  [data-testid="stSidebar"] [data-testid="stHorizontalBlock"] > div:last-child{
+    flex:0 0 1.55rem!important;
+    width:1.55rem!important;
+  }
 }
 </style>
     """,
