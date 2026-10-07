@@ -59,13 +59,13 @@ Deno.serve(async (req: Request) => {
 
     const pad = "=".repeat((4 - (body.length % 4)) % 4);
     const decoded = body.replace(/-/g, "+").replace(/_/g, "/") + pad;
-    const payload = JSON.parse(atob(decoded));
+    const payload = JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(decoded), c => c.charCodeAt(0))));
 
     const identityType = String(payload?.identity_type ?? payload?.typ ?? "");
     const identityId = String(payload?.identity_id ?? payload?.sub ?? "");
     const exp = Number(payload?.exp ?? 0);
 
-    if (!["player", "founder"].includes(identityType) || !identityId) {
+    if (identityType !== "player" || !identityId || payload?.v !== 2) {
       return makeResponse("Invalid identity", 400);
     }
     if (!Number.isFinite(exp) || exp < Date.now() / 1000) {
@@ -80,59 +80,16 @@ Deno.serve(async (req: Request) => {
 
     const db = createClient(supabaseUrl, serviceKey);
 
-    const { data: existing, error: lookupError } = await db
-      .from("push_subscriptions")
-      .select("id")
-      .eq("identity_type", identityType)
-      .eq("identity_id", identityId)
-      .eq("fcm_token", token)
-      .limit(1);
-
-    if (lookupError) {
-      console.error("push lookup", lookupError.code, lookupError.message);
-      return makeResponse(`Database lookup failed: ${lookupError.code ?? "db_lookup_error"}`, 500);
-    }
-
-    let writeError = null;
-
-    if (existing && existing.length > 0) {
-      const result = await db
-        .from("push_subscriptions")
-        .update({
-          user_agent: userAgent,
-          is_active: true,
-          updated_at: new Date().toISOString(),
-        })
-        .eq("id", existing[0].id);
-      writeError = result.error;
-    } else {
-      const result = await db
-        .from("push_subscriptions")
-        .insert({
-          identity_type: identityType,
-          identity_id: identityId,
-          fcm_token: token,
-          user_agent: userAgent,
-          is_active: true,
-          updated_at: new Date().toISOString(),
-        });
-      writeError = result.error;
-
-      // Harmless race fallback if two first registrations arrive together.
-      if (writeError?.code === "23505") {
-        const retry = await db
-          .from("push_subscriptions")
-          .update({
-            user_agent: userAgent,
-            is_active: true,
-            updated_at: new Date().toISOString(),
-          })
-          .eq("identity_type", identityType)
-          .eq("identity_id", identityId)
-          .eq("fcm_token", token);
-        writeError = retry.error;
-      }
-    }
+    const { data: player, error } = await db.from("players").select("id,status,password_hash")
+      .eq("activision_id", identityId).maybeSingle();
+    if (error || player?.status !== "Approved") return makeResponse("Forbidden", 403);
+    const digest = await crypto.subtle.digest("SHA-256", enc.encode(`${player.id}:${player.password_hash || ""}`));
+    const stamp = Array.from(new Uint8Array(digest), b => b.toString(16).padStart(2, "0")).join("");
+    if (payload.auth !== stamp) return makeResponse("Session expired", 403);
+    const { error: writeError } = await db.rpc("ld_register_push_identity", {
+      p_identity_type: identityType, p_identity_id: identityId,
+      p_token: token, p_user_agent: userAgent,
+    });
 
     if (writeError) {
       console.error("push write", writeError.code, writeError.message);

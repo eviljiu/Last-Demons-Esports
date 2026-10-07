@@ -1,5 +1,6 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
+import { isStaff } from "../_shared/access.ts";
 const enc=new TextEncoder();
 const b64url=(b:Uint8Array)=>btoa(String.fromCharCode(...b)).replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/,"");
 async function accessToken(){
@@ -16,19 +17,39 @@ async function accessToken(){
 function pem(p:string){const b=atob(p.replace(/-----[^-]+-----/g,"").replace(/\s/g,""));return Uint8Array.from(b,c=>c.charCodeAt(0)).buffer}
 Deno.serve(async(req)=>{
   if(req.method!=="POST") return new Response("Method not allowed",{status:405});
-  if(req.headers.get("X-LD-Push-Secret")!==Deno.env.get("PUSH_SEND_SECRET")) return new Response("Unauthorized",{status:401});
+  if(!Deno.env.get("PUSH_SEND_SECRET") || req.headers.get("X-LD-Push-Secret")!==Deno.env.get("PUSH_SEND_SECRET")) return new Response("Unauthorized",{status:401});
   try{
     const {identity_type,identity_id,title,body}=await req.json();
     if(!["player","founder"].includes(identity_type) || !identity_id) throw new Error("bad target");
     const db=createClient(Deno.env.get("SUPABASE_URL")!,Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
-    const {data,error}=await db.from("push_subscriptions").select("id,fcm_token").eq("identity_type",identity_type).eq("identity_id",String(identity_id)).eq("is_active",true);
+    let recipientIds: string[] = [];
+    if (identity_type === "founder") {
+      if (identity_id !== "founder") throw new Error("bad target");
+      const {data: players, error} = await db.from("players").select("activision_id,status,org_role").eq("status","Approved");
+      if (error) throw error;
+      recipientIds = (players || []).filter(isStaff).map(p => p.activision_id);
+    } else {
+      const {data: player, error} = await db.from("players").select("status").eq("activision_id",String(identity_id)).maybeSingle();
+      if (error || player?.status !== "Approved") return new Response("Forbidden",{status:403});
+      recipientIds = [String(identity_id)];
+    }
+    if (!recipientIds.length) return new Response(JSON.stringify({ok:true,sent:0}),{headers:{"Content-Type":"application/json"}});
+    const {data,error} = await db.from("push_subscriptions").select("id,fcm_token,identity_id")
+      .eq("identity_type","player").in("identity_id",recipientIds).eq("is_active",true);
     if(error) throw error;
+    if (!data?.length) return new Response(JSON.stringify({ok:true,sent:0}),{headers:{"Content-Type":"application/json"}});
     const oauth=await accessToken(), project=Deno.env.get("FIREBASE_PROJECT_ID")!;
     let sent=0;
     for(const row of data||[]){
+      const {data: current, error: currentError} = await db.from("players").select("status,org_role")
+        .eq("activision_id",row.identity_id).maybeSingle();
+      if (currentError || current?.status !== "Approved" || (identity_type === "founder" && !isStaff(current))) continue;
+      const {data: active, error: activeError} = await db.from("push_subscriptions").select("id")
+        .eq("id",row.id).eq("identity_type","player").eq("identity_id",row.identity_id).eq("is_active",true).maybeSingle();
+      if (activeError || !active) continue;
       const r=await fetch(`https://fcm.googleapis.com/v1/projects/${project}/messages:send`,{
         method:"POST",headers:{"Authorization":`Bearer ${oauth}`,"Content-Type":"application/json"},
-        body:JSON.stringify({message:{token:row.fcm_token,notification:{title:String(title||"Last Demons").slice(0,100),body:String(body||"").slice(0,500)},webpush:{fcm_options:{link:"/"}}}})
+        body:JSON.stringify({message:{token:row.fcm_token,data:{identity_type,identity_id:String(identity_id),title:String(title||"Last Demons").slice(0,100),body:identity_type === "founder" ? "Nuovo aggiornamento nell’area organizzazione." : String(body||"").slice(0,500)},webpush:{headers:{TTL:"300"}}}})
       });
       if(r.ok) sent++; else if([404,410].includes(r.status)) await db.from("push_subscriptions").update({is_active:false}).eq("id",row.id);
     }

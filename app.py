@@ -23,6 +23,8 @@ import pandas as pd
 import altair as alt
 import streamlit as st
 import streamlit.components.v1 as components
+from access_control import (OWNER_ID, ALL_ROLES, canonical_role, is_staff, is_owner,
+    can_manage_reserved_roles, allowed_roles, can_control_account, auth_stamp, session_matches)
 
 # ============================================================
 # LAST DEMONS ESPORTS — V3.4.6 PUSH RETURN FIX
@@ -99,18 +101,21 @@ try:
     SUPABASE_URL = st.secrets["SUPABASE_URL"].rstrip("/")
     SUPABASE_SERVICE_KEY = str(st.secrets["SUPABASE_SERVICE_KEY"]).strip()
     SUPABASE_BUCKET = str(st.secrets.get("SUPABASE_BUCKET", "proof-screenshots")).strip()
-    FOUNDER_PASSWORD = st.secrets["FOUNDER_PASSWORD"]
+    FOUNDER_PASSWORD = str(st.secrets.get("FOUNDER_PASSWORD", ""))
 except KeyError as exc:
     st.error(
         "⚠️ Configurazione cloud mancante. Apri Streamlit Cloud → App → Settings "
         "→ Secrets e inserisci DATABASE_URL, SUPABASE_URL, SUPABASE_SERVICE_KEY "
-        "e FOUNDER_PASSWORD."
+        ". Per le sessioni configura anche AUTH_SECRET (o conserva il precedente FOUNDER_PASSWORD)."
     )
     st.stop()
 
 # Persistent Player login (30 days)
 # AUTH_SECRET is optional: if absent, FOUNDER_PASSWORD is used as signing secret.
 AUTH_SECRET = str(st.secrets.get("AUTH_SECRET", FOUNDER_PASSWORD)).strip()
+if not AUTH_SECRET:
+    st.error("Configura AUTH_SECRET nei Secrets di Streamlit.")
+    st.stop()
 # Push secrets are optional until the Supabase Edge Functions are deployed.
 PUSH_REGISTRATION_SECRET = str(st.secrets.get("PUSH_REGISTRATION_SECRET", "")).strip()
 PUSH_SEND_SECRET = str(st.secrets.get("PUSH_SEND_SECRET", "")).strip()
@@ -699,6 +704,8 @@ def get_conn():
 
 def release_conn(conn):
     try:
+        if not conn.closed:
+            conn.rollback()
         if conn.closed:
             db_pool().putconn(conn, close=True)
         else:
@@ -1069,10 +1076,14 @@ def _token_b64d(value: str) -> bytes:
 
 
 def make_remember_token(activision_id: str) -> str:
+    candidate = get_player(activision_id, fresh=True)
+    if not candidate or candidate[4] != "Approved":
+        raise PermissionError("Account non abilitato")
     payload = json.dumps({
         "sub": activision_id,
         "exp": int(time.time()) + REMEMBER_DAYS * 86400,
-        "v": 1,
+        "v": 2,
+        "auth": auth_stamp(candidate),
     }, separators=(",", ":")).encode("utf-8")
     body = _token_b64e(payload)
     signature = hmac.new(
@@ -1092,7 +1103,10 @@ def verify_remember_token(token: str):
         payload = json.loads(_token_b64d(body).decode("utf-8"))
         if int(payload.get("exp", 0)) < int(time.time()):
             return None
-        return str(payload.get("sub", "")).strip() or None
+        candidate = get_player(str(payload.get("sub", "")), fresh=True)
+        if payload.get("v") != 2 or not session_matches(candidate, payload.get("sub"), payload.get("auth")):
+            return None
+        return candidate[1]
     except Exception:
         return None
 
@@ -1152,114 +1166,17 @@ def try_restore_player_session():
     if token:
         player_id = verify_remember_token(token)
         if player_id:
-            candidate = get_player(player_id)
+            candidate = get_player(player_id, fresh=True)
             # Remembered devices are still revoked automatically if player loses approval.
             if candidate and candidate[4] == "Approved":
                 st.session_state.player_logged_in = True
                 st.session_state.player_id = candidate[1]
+                st.session_state["auth_stamp"] = auth_stamp(candidate)
                 return
         forget_device_script()
     else:
         restore_device_script()
 
-
-
-
-def make_founder_remember_token() -> str:
-    payload = json.dumps({
-        "role": "founder",
-        "exp": int(time.time()) + REMEMBER_DAYS * 86400,
-        "v": 1,
-    }, separators=(",", ":")).encode("utf-8")
-    body = _token_b64e(payload)
-    signature = hmac.new(
-        AUTH_SECRET.encode("utf-8"), body.encode("ascii"), hashlib.sha256
-    ).digest()
-    return body + "." + _token_b64e(signature)
-
-
-def verify_founder_remember_token(token: str) -> bool:
-    try:
-        body, signature = token.split(".", 1)
-        expected = hmac.new(
-            AUTH_SECRET.encode("utf-8"), body.encode("ascii"), hashlib.sha256
-        ).digest()
-        if not hmac.compare_digest(_token_b64d(signature), expected):
-            return False
-        payload = json.loads(_token_b64d(body).decode("utf-8"))
-        return (
-            payload.get("role") == "founder"
-            and int(payload.get("exp", 0)) >= int(time.time())
-        )
-    except Exception:
-        return False
-
-
-def remember_founder_script(token: str):
-    st.query_params["founder_token"] = token
-    components.html(
-        f"""<script>
-        try {{
-          localStorage.setItem({json.dumps(FOUNDER_REMEMBER_COOKIE)}, {json.dumps(token)});
-        }} catch(e) {{}}
-        </script>""",
-        height=0,
-    )
-
-
-def forget_founder_script():
-    try:
-        if "founder_token" in st.query_params:
-            del st.query_params["founder_token"]
-    except Exception:
-        pass
-    components.html(
-        f"""<script>
-        try {{
-          localStorage.removeItem({json.dumps(FOUNDER_REMEMBER_COOKIE)});
-        }} catch(e) {{}}
-        </script>""",
-        height=0,
-    )
-
-
-def restore_founder_script():
-    components.html(
-        f"""<script>
-        try {{
-          const key = {json.dumps(FOUNDER_REMEMBER_COOKIE)};
-          const token = localStorage.getItem(key);
-          const u = new URL(window.parent.location.href);
-          const isFounderRoute = ["1","true","yes"].includes(
-            (u.searchParams.get("founder") || "").toLowerCase()
-          );
-          if (isFounderRoute && token && !u.searchParams.get("founder_token")) {{
-            u.searchParams.set("founder_token", token);
-            window.parent.location.replace(u.toString());
-          }}
-        }} catch(e) {{}}
-        </script>""",
-        height=0,
-    )
-
-
-def try_restore_founder_session():
-    if st.session_state.get("founder_logged_in"):
-        return
-
-    founder_route = str(st.query_params.get("founder", "")).lower() in {"1", "true", "yes"}
-    if not founder_route:
-        return
-
-    token = st.query_params.get("founder_token")
-    if token:
-        valid = verify_founder_remember_token(token)
-        if valid:
-            st.session_state.founder_logged_in = True
-            return
-        forget_founder_script()
-    else:
-        restore_founder_script()
 
 
 
@@ -1596,6 +1513,11 @@ def _b64url(data: bytes) -> str:
 def _push_registration_assertion(identity_type: str, identity_id: str) -> str:
     if not PUSH_REGISTRATION_SECRET:
         return ""
+    candidate = get_player(st.session_state.get("player_id"), fresh=True)
+    if identity_type != "player" or identity_id != st.session_state.get("player_id"):
+        return ""
+    if not session_matches(candidate, identity_id, st.session_state.get("auth_stamp")):
+        return ""
     now = int(time.time())
     payload = {
         "identity_type": str(identity_type),
@@ -1603,6 +1525,8 @@ def _push_registration_assertion(identity_type: str, identity_id: str) -> str:
         "iat": now,
         "exp": now + PUSH_ASSERTION_TTL_SECONDS,
         "nonce": uuid.uuid4().hex,
+        "auth": auth_stamp(candidate),
+        "v": 2,
     }
     body = _b64url(json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8"))
     sig = _b64url(hmac.new(
@@ -1621,9 +1545,6 @@ def render_push_opt_in(identity_type: str, identity_id: str):
     # Keep the signed assertion in the URL fragment: it is read by the Firebase page in JS
     # but is not sent to Firebase Hosting as part of the HTTP request.
     return_url = _current_public_app_url()
-    # Preserve the hidden Founder route on return from Firebase.
-    if return_url and identity_type == "founder":
-        return_url = return_url.rstrip("/") + "/?founder=1"
     push_url = f"{PUSH_COMPANION_URL}#a={quote(assertion, safe='')}"
     if return_url:
         push_url += f"&r={quote(return_url, safe='')}"
@@ -1725,7 +1646,7 @@ def notify_founder(event_type: str, message: str, activision_id: str = None):
         (event_type, activision_id, message),
         commit=True,
     )
-    _send_push_async("founder", "founder", "Last Demons Founder", message)
+    _send_push_async("founder", "founder", "Last Demons · Organizzazione", message)
 
 def public_player_card(activision_id: str):
     rows = db_query(
@@ -1779,8 +1700,126 @@ def public_player_card(activision_id: str):
 
 
 
-def get_player(activision_id):
-    rows = db_query(
+def db_read_fresh(query, params=(), fetchall=True):
+    """Authorization and credentials must never use UI/shared caches."""
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(_sql(query), tuple(params or ()))
+            return cur.fetchall()
+    finally:
+        release_conn(conn)
+
+
+def require_staff():
+    actor = get_player(st.session_state.get("player_id"), fresh=True)
+    if not session_matches(actor, st.session_state.get("player_id"), st.session_state.get("auth_stamp")) or not is_staff(actor):
+        st.warning("Permessi di gestione non disponibili. Accedi con un account autorizzato.")
+        st.stop()
+    return actor
+
+
+def _locked_accounts(cur, target_id=None):
+    actor_id = st.session_state.get("player_id")
+    ids = list({x for x in (actor_id, target_id) if x})
+    cur.execute("""SELECT id,activision_id,platform,selection,status,created_at,password_hash,
+        profile_image_url,banner_url,org_role FROM players
+        WHERE activision_id=ANY(%s) ORDER BY id FOR UPDATE""", (ids,))
+    accounts = {row[1]: row for row in cur.fetchall()}
+    actor = accounts.get(actor_id)
+    if not session_matches(actor, actor_id, st.session_state.get("auth_stamp")):
+        raise PermissionError("Sessione scaduta o account non abilitato.")
+    return actor, accounts.get(target_id)
+
+
+def staff_transaction(statements, target_id=None, account_control=False, deleting=False):
+    conn = get_conn()
+    result = None
+    try:
+        with conn.cursor() as cur:
+            actor, target = _locked_accounts(cur, target_id)
+            if not is_staff(actor):
+                raise PermissionError("Il tuo ruolo non permette questa operazione.")
+            if account_control and not can_control_account(actor, target, deleting):
+                raise PermissionError("Non puoi modificare le credenziali, lo stato o rimuovere questo account riservato.")
+            for query, params in statements:
+                # Role changes always go through set_org_role, including old/new role checks.
+                if re.search(r"\borg_role\b", query, re.I):
+                    raise PermissionError("Usa la gestione autorizzata dei ruoli.")
+                cur.execute(_sql(query), tuple(params or ()))
+                result = cur.fetchall() if cur.description else None
+                if account_control and re.search(r"\bSET\s+password_hash\s*=", query, re.I):
+                    cur.execute("UPDATE push_subscriptions SET is_active=FALSE WHERE identity_type='player' AND identity_id=%s", (target_id,))
+        conn.commit()
+        for query, _ in statements:
+            clear_read_caches(query)
+        if account_control:
+            clear_read_caches("UPDATE push_subscriptions")
+        return result
+    except PermissionError as exc:
+        conn.rollback()
+        st.warning(str(exc))
+        st.stop()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        release_conn(conn)
+
+
+def staff_query(query, params=(), fetchall=False, commit=False, **guards):
+    if commit:
+        return staff_transaction([(query, params)], **guards)
+    # player is a fresh, authenticated snapshot for this script run, never a widget value.
+    if not is_staff(player):
+        st.stop()
+    return db_query(query, params, fetchall=fetchall)
+
+
+def set_org_role(target_id, new_role):
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            actor, target = _locked_accounts(cur, target_id)
+            role = canonical_role(new_role)
+            if not role or role not in allowed_roles(actor, target):
+                raise PermissionError("Non hai il permesso di assegnare o modificare questo ruolo.")
+            cur.execute("UPDATE players SET org_role=%s WHERE activision_id=%s", (role, target_id))
+        conn.commit()
+        clear_read_caches("UPDATE players SET org_role")
+    except PermissionError as exc:
+        conn.rollback()
+        st.warning(str(exc))
+        st.stop()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        release_conn(conn)
+
+
+def render_role_editor(target_id):
+    actor = get_player(st.session_state.get("player_id"), fresh=True)
+    target = get_player(target_id, fresh=True)
+    options = allowed_roles(actor, target)
+    if not options:
+        st.info("Questo ruolo è riservato a Founder, Co-Founder e al proprietario.")
+        return
+    current = canonical_role(target[9])
+    # Re-key if permissions change; stale widget state cannot retain a privileged choice.
+    new_role = st.selectbox("Ruolo", options,
+        index=options.index(current) if current in options else 0,
+        key=f"org_role_{target_id}_{','.join(options)}")
+    if st.button("💾 Salva ruolo", use_container_width=True):
+        set_org_role(target_id, new_role)
+        notify_player(target_id, f"🛡️ Il tuo ruolo nell'organizzazione è ora: {new_role}.")
+        st.success("Ruolo aggiornato.")
+        st.rerun()
+
+
+def get_player(activision_id, fresh=False):
+    reader = db_read_fresh if fresh else db_query
+    rows = reader(
         """
         SELECT id, activision_id, platform, selection, status, created_at, password_hash, profile_image_url, banner_url, org_role
         FROM players WHERE activision_id=?
@@ -1798,7 +1837,7 @@ def get_player(activision_id):
 defaults = {
     "player_logged_in": False,
     "player_id": None,
-    "founder_logged_in": False,
+    
 }
 for key, value in defaults.items():
     if key not in st.session_state:
@@ -1806,13 +1845,8 @@ for key, value in defaults.items():
 
 
 def player_logout():
-    st.session_state.player_logged_in = False
-    st.session_state.player_id = None
-    st.rerun()
-
-
-def founder_logout():
-    st.session_state.founder_logged_in = False
+    forget_device_script()
+    st.session_state.clear()
     st.rerun()
 
 
@@ -1820,10 +1854,14 @@ def founder_logout():
 # PUBLIC AREA — ONLY REGISTER / LOGIN
 # ============================================================
 
+# Legacy links still open the single login, but never grant privileges.
+st.session_state.pop("founder_logged_in", None)
+for legacy_param in ("founder", "founder_token"):
+    if legacy_param in st.query_params:
+        del st.query_params[legacy_param]
 try_restore_player_session()
-try_restore_founder_session()
 
-if not st.session_state.player_logged_in and not st.session_state.founder_logged_in:
+if not st.session_state.player_logged_in:
     hero()
 
     st.markdown(
@@ -1831,39 +1869,11 @@ if not st.session_state.player_logged_in and not st.session_state.founder_logged
         unsafe_allow_html=True,
     )
 
-    founder_route = str(st.query_params.get("founder", "")).lower() in {"1", "true", "yes"}
-
-    if founder_route:
-        st.markdown('<div class="ld-section">FOUNDER CONTROL ROOM</div>', unsafe_allow_html=True)
-        st.subheader("🛡️ Accesso Founder")
-        st.caption("Area amministrativa riservata.")
-        with st.form("founder_login_hidden", enter_to_submit=False):
-            founder_password = st.text_input("Password Founder", type="password")
-            remember_founder = st.checkbox(
-                "Ricorda questo dispositivo per 30 giorni",
-                value=True,
-                help="La password Founder non viene salvata sul dispositivo.",
-            )
-            founder_btn = st.form_submit_button(
-                "ENTRA NEL CONTROL ROOM",
-                type="primary",
-                use_container_width=True,
-            )
-            if founder_btn:
-                if hmac.compare_digest(founder_password, FOUNDER_PASSWORD):
-                    st.session_state.founder_logged_in = True
-                    if remember_founder:
-                        remember_founder_script(make_founder_remember_token())
-                    st.rerun()
-                else:
-                    st.error("Password Founder errata.")
-        st.stop()
-
     st.markdown('<div class="ld-section">JOIN LAST DEMONS</div>', unsafe_allow_html=True)
 
     portal_mode = st.radio(
         "PORTALE",
-        ["🔥 REGISTRATI", "🎮 ACCESSO PLAYER"],
+        ["🔥 REGISTRATI", "🎮 ACCEDI"],
         horizontal=True,
         key="public_portal_mode_v28",
     )
@@ -1915,10 +1925,10 @@ if not st.session_state.player_logged_in and not st.session_state.founder_logged
                 elif candidate[4]=="Rejected": st.error("❌ Candidatura non approvata.")
                 elif candidate[4]=="Approved":
                     st.session_state["checked_candidate"]=candidate[1]
-                    st.success("✅ Approvato. Apri ACCESSO PLAYER.")
+                    st.success("✅ Approvato. Apri ACCEDI.")
 
         else:
-            st.subheader("🎮 Accesso Player")
+            st.subheader("🎮 Accesso Last Demons")
             st.caption("L'accesso funziona solo per gli account Approved.")
             with st.form("player_login_v28", enter_to_submit=False):
                 login_id=st.text_input("Activision ID",
@@ -1933,7 +1943,7 @@ if not st.session_state.player_logged_in and not st.session_state.founder_logged
                 login_btn=st.form_submit_button("🎮 ACCEDI AL COMMAND CENTER",type="primary",use_container_width=True)
                 if login_btn:
                     clear_read_caches()
-                    candidate=get_player(login_id.strip())
+                    candidate=get_player(login_id.strip(), fresh=True)
                     if not candidate: st.error("Activision ID non registrato.")
                     elif candidate[4]=="Pending": st.warning("⏳ Candidatura ancora in attesa.")
                     elif candidate[4]=="Rejected": st.error("❌ Candidatura non approvata.")
@@ -1942,8 +1952,11 @@ if not st.session_state.player_logged_in and not st.session_state.founder_logged
                     elif verify_password(login_password,candidate[6]):
                         st.session_state.player_logged_in=True
                         st.session_state.player_id=candidate[1]
+                        st.session_state["auth_stamp"] = auth_stamp(candidate)
                         if remember_device:
                             remember_device_script(make_remember_token(candidate[1]))
+                        else:
+                            forget_device_script()
                         st.rerun()
                     else: st.error("Password errata.")
 
@@ -1952,7 +1965,7 @@ if not st.session_state.player_logged_in and not st.session_state.founder_logged
             <div class="ld-welcome">LAST DEMONS PORTAL</div>
             <div class="ld-muted"><b>01</b> · Registrati.<br><br>
             <b>02</b> · Attendi l'approvazione.<br><br>
-            <b>03</b> · Entra da <b>ACCESSO PLAYER</b>.<br><br>
+            <b>03</b> · Entra da <b>ACCEDI</b>.<br><br>
             <b>04</b> · Accedi al Command Center.</div></div>""",unsafe_allow_html=True)
         st.markdown("### 👥 Roster ufficiale")
         roster=db_query("""SELECT activision_id,selection,org_role,profile_image_url
@@ -1992,54 +2005,87 @@ def _base_nav_label(value: str) -> str:
     return re.sub(r"\s+🔴\s+\d+$", "", value or "")
 
 
+# One account, one menu. Every run obtains authorization directly from PostgreSQL.
+player = get_player(st.session_state.player_id, fresh=True)
+if not session_matches(player, st.session_state.get("player_id"), st.session_state.get("auth_stamp")):
+    forget_device_script()
+    st.session_state.clear()
+    st.warning("Accedi di nuovo con il tuo account personale.")
+    st.rerun()
+player_id = player[1]
+player_selection = display_selection(player[3])
+manager_access = is_staff(player)
+
+st.sidebar.markdown(
+    f'<div style="text-align:center"><img src="{sidebar_logo_data_uri()}" style="width:145px;max-width:90%;"></div>',
+    unsafe_allow_html=True,
+)
+st.sidebar.markdown(f"### 🎮 {html.escape(player_id)}")
+st.sidebar.caption(f"{canonical_role(player[9]) or 'Player'} · {player_selection}")
+
+_player_pending, _player_unread = db_query(
+    """SELECT
+      (SELECT COUNT(*) FROM submissions WHERE activision_id=? AND status='Pending'),
+      (SELECT COUNT(*) FROM notifications WHERE activision_id=? AND is_read=FALSE)""",
+    (player_id, player_id), fetchall=True,
+)[0]
+player_pages = ["🏠 Home", "🏆 Leaderboard", "📸 Carica Prova", "🔔 Notifiche", "👤 Il mio Profilo", "🪪 Player Card"]
+staff_pages = ["📊 Dashboard", "🔔 Notifiche organizzazione", "📢 Comunicazioni", "👥 Candidature",
+               "📸 Prove Player", "🎮 Gestione Player", "🗓️ Stagioni"]
+nav_pages = player_pages + (staff_pages if manager_access else [])
+# Explicit owner exception: role management only, no Founder data without a staff role.
+if is_owner(player) and not manager_access:
+    nav_pages.append("🛡️ Ruoli organizzazione")
+counts = {"📸 Carica Prova": _player_pending, "🔔 Notifiche": _player_unread}
+if manager_access:
+    pending_candidates, pending_proofs, founder_unread = staff_query(
+        """SELECT (SELECT COUNT(*) FROM players WHERE status='Pending'),
+          (SELECT COUNT(*) FROM submissions WHERE status='Pending'),
+          (SELECT COUNT(*) FROM founder_notifications WHERE is_read=FALSE AND COALESCE(is_archived,FALSE)=FALSE)""",
+        fetchall=True,
+    )[0]
+    counts.update({"👥 Candidature": pending_candidates, "📸 Prove Player": pending_proofs,
+                   "🔔 Notifiche organizzazione": founder_unread})
+requested_staff = st.session_state.pop("_founder_nav_target", None)
+requested_player = st.session_state.pop("_player_nav_target", None)
+requested = requested_staff if manager_access and requested_staff else requested_player
+if manager_access and requested_staff == "🔔 Notifiche":
+    requested = "🔔 Notifiche organizzazione"
+if requested in nav_pages:
+    st.session_state["unified_navigation"] = requested
+if st.session_state.get("unified_navigation") not in nav_pages:
+    st.session_state["unified_navigation"] = "🏠 Home"
+selected_page = st.sidebar.radio("COMMAND CENTER", nav_pages, key="unified_navigation",
+    format_func=lambda label: _badge_label(label, counts.get(label, 0)))
+auto_close_mobile_sidebar("unified_navigation", selected_page)
+if st.sidebar.button("🚪 Logout", use_container_width=True):
+    player_logout()
+
+if selected_page == "🛡️ Ruoli organizzazione" and is_owner(player):
+    st.markdown('### 🛡️ Ruoli organizzazione')
+    role_targets = db_read_fresh("SELECT activision_id FROM players ORDER BY LOWER(activision_id)")
+    target = st.selectbox("Account", [r[0] for r in role_targets])
+    render_role_editor(target)
+    st.stop()
+
+founder_page = selected_page if manager_access and selected_page in staff_pages else None
+if founder_page == "🔔 Notifiche organizzazione":
+    founder_page = "🔔 Notifiche"
+player_page = selected_page if selected_page in player_pages else "🏠 Home"
+
+
 # ============================================================
 # FOUNDER AREA
 # ============================================================
 
-if st.session_state.founder_logged_in:
-    st.sidebar.markdown(
-        f'<div style="text-align:center"><img src="{sidebar_logo_data_uri()}" '
-        'style="width:150px;max-width:90%;"></div>',
-        unsafe_allow_html=True,
-    )
-    st.sidebar.markdown("### 🛡️ FOUNDER")
-    _pending_candidates, _pending_proofs, _founder_unread = db_query(
-        """
-        SELECT
-          (SELECT COUNT(*) FROM players WHERE status='Pending'),
-          (SELECT COUNT(*) FROM submissions WHERE status='Pending'),
-          (SELECT COUNT(*) FROM founder_notifications WHERE is_read=FALSE AND COALESCE(is_archived,FALSE)=FALSE)
-        """,
-        fetchall=True,
-    )[0]
-    _founder_nav = [
-        "📊 Dashboard",
-        _badge_label("🔔 Notifiche", _founder_unread),
-        "📢 Comunicazioni",
-        _badge_label("👥 Candidature", _pending_candidates),
-        _badge_label("📸 Prove Player", _pending_proofs),
-        "🎮 Gestione Player",
-        "🗓️ Stagioni",
-    ]
-    _requested_founder_page = st.session_state.pop("_founder_nav_target", None)
-    if _requested_founder_page:
-        st.session_state["founder_navigation_v343"] = next(
-            (x for x in _founder_nav if _base_nav_label(x) == _requested_founder_page),
-            "📊 Dashboard",
-        )
-    founder_page_display = st.sidebar.radio("CONTROL ROOM", _founder_nav, key="founder_navigation_v343")
-    founder_page = _base_nav_label(founder_page_display)
-    auto_close_mobile_sidebar("founder_navigation_v343", founder_page_display)
-    if st.sidebar.button("🚪 Logout Founder", use_container_width=True):
-        forget_founder_script()
-        founder_logout()
-
+if founder_page:
+    require_staff()
     st.markdown('<div class="ld-internal-brand">LAST DEMONS <span>COMMAND CENTER</span></div>', unsafe_allow_html=True)
 
     if founder_page == "📊 Dashboard":
         st.markdown('<div class="ld-section">FOUNDER DASHBOARD</div>', unsafe_allow_html=True)
 
-        approved, pending, proofs, founder_unread = db_query(
+        approved, pending, proofs, founder_unread = staff_query(
             """
             SELECT
               (SELECT COUNT(*) FROM players WHERE status='Approved'),
@@ -2103,7 +2149,7 @@ if st.session_state.founder_logged_in:
                     st.rerun()
 
         st.markdown("### 🏆 TOP 5 ORGANIZZAZIONE")
-        perf = db_query(
+        perf = staff_query(
             """
             SELECT p.activision_id,
                    COALESCE(SUM(s.kills),0),
@@ -2148,7 +2194,7 @@ if st.session_state.founder_logged_in:
         if season:
             st.info(f"🗓️ Stagione attiva: **{season[1]}**")
 
-        recent_news = db_query(
+        recent_news = staff_query(
             "SELECT title, body, created_at FROM announcements WHERE is_active=TRUE ORDER BY created_at DESC LIMIT 3",
             fetchall=True,
         ) or []
@@ -2162,12 +2208,12 @@ if st.session_state.founder_logged_in:
 
     elif founder_page == "🔔 Notifiche":
         st.markdown('<div class="ld-section">NOTIFICHE FOUNDER</div>', unsafe_allow_html=True)
-        render_push_opt_in("founder", "founder")
+        render_push_opt_in("player", player_id)
 
         archive_col1, archive_col2 = st.columns([4, 1])
         with archive_col2:
             with st.popover("🗃️ Archivio"):
-                archived_notes = db_query(
+                archived_notes = staff_query(
                     "SELECT id,event_type,activision_id,message,created_at FROM founder_notifications WHERE COALESCE(is_archived,FALSE)=TRUE ORDER BY created_at DESC LIMIT 200",
                     fetchall=True,
                 ) or []
@@ -2180,11 +2226,11 @@ if st.session_state.founder_logged_in:
                         meta = f"{aact} · " if aact else ""
                         st.caption(f"{meta}{str(acreated)[:16]}")
                         if st.button("🗑️ Elimina definitivamente", key=f"delete_archived_{anid}", use_container_width=True):
-                            db_query("DELETE FROM founder_notifications WHERE id=?", (anid,), commit=True)
+                            staff_query("DELETE FROM founder_notifications WHERE id=?", (anid,), commit=True)
                             st.rerun()
                         st.divider()
 
-        founder_notes = db_query(
+        founder_notes = staff_query(
             "SELECT id,event_type,activision_id,message,is_read,created_at FROM founder_notifications WHERE COALESCE(is_archived,FALSE)=FALSE ORDER BY created_at DESC LIMIT 150",
             fetchall=True,
         ) or []
@@ -2193,7 +2239,7 @@ if st.session_state.founder_logged_in:
         c1.metric("Da leggere", unread_founder)
         with c2:
             if unread_founder and st.button("✓ Segna tutte come lette", use_container_width=True):
-                db_query("UPDATE founder_notifications SET is_read=TRUE WHERE is_read=FALSE AND COALESCE(is_archived,FALSE)=FALSE", commit=True)
+                staff_query("UPDATE founder_notifications SET is_read=TRUE WHERE is_read=FALSE AND COALESCE(is_archived,FALSE)=FALSE", commit=True)
                 st.rerun()
         if not founder_notes:
             st.info("Nessuna notifica Founder.")
@@ -2211,20 +2257,20 @@ if st.session_state.founder_logged_in:
                         target = "👥 Candidature" if event_type == "application" else ("📸 Prove Player" if event_type == "proof" else None)
                         if target and st.button("Apri →", key=f"founder_open_{nid}", use_container_width=True):
                             if not is_read:
-                                db_query("UPDATE founder_notifications SET is_read=TRUE WHERE id=?", (nid,), commit=True)
+                                staff_query("UPDATE founder_notifications SET is_read=TRUE WHERE id=?", (nid,), commit=True)
                             st.session_state["_founder_nav_target"] = target
                             st.rerun()
                         elif not is_read and st.button("✓ Letta", key=f"founder_note_{nid}", use_container_width=True):
-                            db_query("UPDATE founder_notifications SET is_read=TRUE WHERE id=?", (nid,), commit=True)
+                            staff_query("UPDATE founder_notifications SET is_read=TRUE WHERE id=?", (nid,), commit=True)
                             st.rerun()
                     actions1, actions2 = st.columns(2)
                     with actions1:
                         if st.button("🗃️ Archivia", key=f"founder_archive_{nid}", use_container_width=True):
-                            db_query("UPDATE founder_notifications SET is_archived=TRUE, is_read=TRUE WHERE id=?", (nid,), commit=True)
+                            staff_query("UPDATE founder_notifications SET is_archived=TRUE, is_read=TRUE WHERE id=?", (nid,), commit=True)
                             st.rerun()
                     with actions2:
                         if st.button("🗑️ Elimina", key=f"founder_delete_{nid}", use_container_width=True):
-                            db_query("DELETE FROM founder_notifications WHERE id=?", (nid,), commit=True)
+                            staff_query("DELETE FROM founder_notifications WHERE id=?", (nid,), commit=True)
                             st.rerun()
 
     elif founder_page == "📢 Comunicazioni":
@@ -2237,7 +2283,7 @@ if st.session_state.founder_logged_in:
                 if not news_title.strip() or not news_body.strip():
                     st.error("Inserisci titolo e messaggio.")
                 else:
-                    db_query(
+                    staff_query(
                         "INSERT INTO announcements (title, body, is_active) VALUES (?, ?, TRUE)",
                         (news_title.strip(), news_body.strip()),
                         commit=True,
@@ -2245,7 +2291,7 @@ if st.session_state.founder_logged_in:
                     st.success("Comunicazione pubblicata.")
                     st.rerun()
 
-        news_rows = db_query(
+        news_rows = staff_query(
             "SELECT id, title, body, created_at, is_active FROM announcements ORDER BY created_at DESC",
             fetchall=True,
         ) or []
@@ -2255,13 +2301,13 @@ if st.session_state.founder_logged_in:
                 st.write(body)
                 st.caption(f"{str(created)[:16]} · {'Attiva' if active else 'Archiviata'}")
                 if active and st.button("Archivia", key=f"archive_news_{nid}"):
-                    db_query("UPDATE announcements SET is_active=FALSE WHERE id=?", (nid,), commit=True)
+                    staff_query("UPDATE announcements SET is_active=FALSE WHERE id=?", (nid,), commit=True)
                     st.rerun()
 
     elif founder_page == "👥 Candidature":
         st.markdown('<div class="ld-section">CANDIDATURE IN ATTESA</div>', unsafe_allow_html=True)
 
-        rows = db_query(
+        rows = staff_query(
             """
             SELECT id, activision_id, platform, created_at
             FROM players
@@ -2290,13 +2336,13 @@ if st.session_state.founder_logged_in:
                     with c:
                         st.write("")
                         if st.button("✅ Accetta", key=f"acc_{pid}", use_container_width=True):
-                            db_query(
+                            staff_query(
                                 "UPDATE players SET selection=?, status='Approved' WHERE id=?",
                                 (role, pid),
-                                commit=True,
+                                commit=True, target_id=act, account_control=True,
                             )
                             notify_player(act, f"✅ Candidatura approvata. Sei stato assegnato a {role}.")
-                            db_query(
+                            staff_query(
                                 "UPDATE founder_notifications SET is_archived=TRUE, is_read=TRUE WHERE event_type='application' AND activision_id=? AND COALESCE(is_archived,FALSE)=FALSE",
                                 (act,),
                                 commit=True,
@@ -2305,13 +2351,13 @@ if st.session_state.founder_logged_in:
                     with d:
                         st.write("")
                         if st.button("❌ Rifiuta", key=f"rej_{pid}", use_container_width=True):
-                            db_query(
+                            staff_query(
                                 "UPDATE players SET status='Rejected' WHERE id=?",
                                 (pid,),
-                                commit=True,
+                                commit=True, target_id=act, account_control=True,
                             )
                             notify_player(act, "❌ La candidatura non è stata approvata.")
-                            db_query(
+                            staff_query(
                                 "UPDATE founder_notifications SET is_archived=TRUE, is_read=TRUE WHERE event_type='application' AND activision_id=? AND COALESCE(is_archived,FALSE)=FALSE",
                                 (act,),
                                 commit=True,
@@ -2322,7 +2368,7 @@ if st.session_state.founder_logged_in:
         st.markdown('<div class="ld-section">ARCHIVIO PROVE PER ACTIVISION ID</div>', unsafe_allow_html=True)
 
 
-        pending_by_sender = db_query(
+        pending_by_sender = staff_query(
             """
             SELECT activision_id, COUNT(*), MAX(timestamp)
             FROM submissions
@@ -2355,7 +2401,7 @@ if st.session_state.founder_logged_in:
 
         ids = [
             r[0]
-            for r in db_query(
+            for r in staff_query(
                 """SELECT activision_id FROM players UNION SELECT activision_id FROM submissions ORDER BY activision_id""",
                 fetchall=True,
             ) or []
@@ -2378,7 +2424,7 @@ if st.session_state.founder_logged_in:
                 )
 
             if proof_filter == "Tutte":
-                rows = db_query(
+                rows = staff_query(
                     """
                     SELECT id,kills,wins,matches_played,rating_gained,
                            photo_path,month_year,status,timestamp,placement,placement_score
@@ -2393,7 +2439,7 @@ if st.session_state.founder_logged_in:
                     fetchall=True,
                 ) or []
             else:
-                rows = db_query(
+                rows = staff_query(
                     """
                     SELECT id,kills,wins,matches_played,rating_gained,
                            photo_path,month_year,status,timestamp,placement,placement_score
@@ -2423,7 +2469,7 @@ if st.session_state.founder_logged_in:
                         if path:
                             st.image(path, caption=f"Prova #{sid}", use_container_width=True)
                         else:
-                            st.error("Immagine non disponibile.")
+                            st.info("Immagine non più disponibile. I dati della prova restano salvati.")
                     with info:
                         st.markdown(f"### 🎮 {selected}")
                         st.write(f"**Kill:** {kills}")
@@ -2447,7 +2493,7 @@ if st.session_state.founder_logged_in:
                                 type="primary",
                                 use_container_width=True,
                             ):
-                                db_query(
+                                staff_query(
                                     "UPDATE submissions SET status='Approved' WHERE id=?",
                                     (sid,),
                                     commit=True,
@@ -2460,7 +2506,7 @@ if st.session_state.founder_logged_in:
                                 key=f"reject_{sid}",
                                 use_container_width=True,
                             ):
-                                db_query(
+                                staff_query(
                                     "UPDATE submissions SET status='Rejected' WHERE id=?",
                                     (sid,),
                                     commit=True,
@@ -2471,7 +2517,7 @@ if st.session_state.founder_logged_in:
     elif founder_page == "🎮 Gestione Player":
         st.markdown('<div class="ld-section">GESTIONE PLAYER</div>', unsafe_allow_html=True)
 
-        all_players = db_query(
+        all_players = staff_query(
             """
             SELECT id, activision_id, platform, selection, status, created_at, profile_image_url, banner_url, org_role
             FROM players
@@ -2536,7 +2582,7 @@ if st.session_state.founder_logged_in:
                 )
                 new_selection = "Academy" if new_selection_label == "LD Player" else new_selection_label
                 if st.button("💾 Salva selezione", use_container_width=True):
-                    db_query(
+                    staff_query(
                         "UPDATE players SET selection=? WHERE activision_id=?",
                         (new_selection, chosen),
                         commit=True,
@@ -2550,36 +2596,21 @@ if st.session_state.founder_logged_in:
                     type="password",
                     help="Utile anche per account creati con la V1.",
                 )
-                if st.button("🔐 Salva nuova password", use_container_width=True):
+                if st.button("🔐 Salva nuova password", use_container_width=True,
+                             disabled=not can_control_account(player, get_player(chosen, fresh=True))):
                     if len(new_password) < 8:
                         st.error("Minimo 8 caratteri.")
                     else:
-                        db_query(
+                        staff_query(
                             "UPDATE players SET password_hash=? WHERE activision_id=?",
                             (hash_password(new_password), chosen),
-                            commit=True,
+                            commit=True, target_id=chosen, account_control=True,
                         )
                         st.success("Password player aggiornata.")
 
             st.divider()
             st.markdown("### 🛡️ Ruolo organizzazione")
-            role_options = ["Player", "Coach", "Manager", "FOUNDER", "CO-FOUNDER", "AMMINISTRATORE"]
-            current_role = chosen_row[8] if chosen_row[8] in role_options else "Player"
-            new_org_role = st.selectbox(
-                "Ruolo",
-                role_options,
-                index=role_options.index(current_role),
-                key=f"org_role_{chosen}",
-            )
-            if st.button("💾 Salva ruolo", use_container_width=True):
-                db_query(
-                    "UPDATE players SET org_role=? WHERE activision_id=?",
-                    (new_org_role, chosen),
-                    commit=True,
-                )
-                notify_player(chosen, f"🛡️ Il tuo ruolo nell'organizzazione è ora: {new_org_role}.")
-                st.success("Ruolo aggiornato.")
-                st.rerun()
+            render_role_editor(chosen)
 
             st.divider()
             st.markdown("### ⚠️ Rimozione player")
@@ -2595,9 +2626,9 @@ if st.session_state.founder_logged_in:
                 "🗑️ RIMUOVI DEFINITIVAMENTE PLAYER",
                 type="primary",
                 use_container_width=True,
-                disabled=not confirm_remove,
+                disabled=not confirm_remove or not can_control_account(player, get_player(chosen, fresh=True), deleting=True),
             ):
-                media_rows = db_query(
+                media_rows = staff_query(
                     "SELECT photo_path FROM submissions WHERE activision_id=?",
                     (chosen,),
                     fetchall=True,
@@ -2607,13 +2638,13 @@ if st.session_state.founder_logged_in:
 
                 # Remove relational data first. Storage cleanup is best-effort afterwards:
                 # a temporary Storage failure must never leave a player half-deleted in the DB.
-                db_transaction([
+                staff_transaction([
                     ("DELETE FROM notifications WHERE activision_id=?", (chosen,)),
                     ("DELETE FROM push_subscriptions WHERE identity_type='player' AND identity_id=?", (chosen,)),
                     ("DELETE FROM submissions WHERE activision_id=?", (chosen,)),
                     ("DELETE FROM founder_notifications WHERE activision_id=?", (chosen,)),
                     ("DELETE FROM players WHERE activision_id=?", (chosen,)),
-                ])
+                ], target_id=chosen, account_control=True, deleting=True)
 
                 for url in cleanup_urls:
                     delete_storage_url(url)
@@ -2625,7 +2656,7 @@ if st.session_state.founder_logged_in:
         current = active_season_v241()
         if current:
             st.success(f"Stagione attiva: {current[1]}")
-        seasons = db_query(
+        seasons = staff_query(
             "SELECT id, name, started_at, ended_at, is_active FROM seasons ORDER BY id DESC",
             fetchall=True,
         ) or []
@@ -2657,7 +2688,7 @@ if st.session_state.founder_logged_in:
                 elif not confirm_season or confirm_text.strip().upper() != "AZZERA":
                     st.error("Per sicurezza spunta la conferma e scrivi AZZERA.")
                 else:
-                    db_transaction([
+                    staff_transaction([
                         ("UPDATE seasons SET is_active=FALSE, ended_at=CURRENT_TIMESTAMP WHERE is_active=TRUE", ()),
                         ("INSERT INTO seasons (name, is_active) VALUES (?, TRUE)", (season_name.strip(),)),
                     ])
@@ -2691,7 +2722,7 @@ if st.session_state.founder_logged_in:
                     if not clear_check or clear_text.strip().upper() != "AZZERA RISULTATI":
                         st.error('Spunta la conferma e scrivi AZZERA RISULTATI.')
                     else:
-                        db_query(
+                        staff_query(
                             "DELETE FROM submissions WHERE season_id=?",
                             (current[0],),
                             commit=True,
@@ -2736,7 +2767,7 @@ if st.session_state.founder_logged_in:
                         st.error('Spunta la conferma e scrivi ELIMINA STAGIONE.')
                     else:
                         # Atomic and guarded: only an inactive season can be removed.
-                        db_transaction([
+                        staff_transaction([
                             (
                                 "DELETE FROM submissions WHERE season_id=? "
                                 "AND EXISTS (SELECT 1 FROM seasons WHERE id=? AND is_active=FALSE)",
@@ -2864,60 +2895,6 @@ def render_esports_leaderboard(rows, metric: str, logged_player: str = ""):
 # ============================================================
 # APPROVED PLAYER AREA
 # ============================================================
-
-player = get_player(st.session_state.player_id)
-
-# Controllo ad ogni rerun: se il Founder revoca lo stato, l'accesso viene chiuso.
-if not player or player[4] != "Approved":
-    st.session_state.player_logged_in = False
-    st.session_state.player_id = None
-    st.warning("Il tuo profilo non risulta più approvato.")
-    st.rerun()
-
-player_id = player[1]
-player_selection = display_selection(player[3])
-
-st.sidebar.markdown(
-    f'<div style="text-align:center"><img src="{sidebar_logo_data_uri()}" '
-    'style="width:145px;max-width:90%;"></div>',
-    unsafe_allow_html=True,
-)
-st.sidebar.markdown(f"### 🎮 {player_id}")
-st.sidebar.caption(f"Selezione · {player_selection}")
-st.sidebar.divider()
-
-_player_pending, _player_unread = db_query(
-    """
-    SELECT
-      (SELECT COUNT(*) FROM submissions WHERE activision_id=? AND status='Pending'),
-      (SELECT COUNT(*) FROM notifications WHERE activision_id=? AND is_read=FALSE)
-    """,
-    (player_id, player_id), fetchall=True,
-)[0]
-_player_nav = [
-    "🏠 Home",
-    "🏆 Leaderboard",
-    _badge_label("📸 Carica Prova", _player_pending),
-    _badge_label("🔔 Notifiche", _player_unread),
-    "👤 Il mio Profilo",
-    "🪪 Player Card",
-]
-_requested_player_page = st.session_state.pop("_player_nav_target", None)
-if _requested_player_page:
-    st.session_state["player_navigation_v343"] = next(
-        (x for x in _player_nav if _base_nav_label(x) == _requested_player_page),
-        "🏠 Home",
-    )
-player_page_display = st.sidebar.radio("COMMAND CENTER", _player_nav, key="player_navigation_v343")
-player_page = _base_nav_label(player_page_display)
-auto_close_mobile_sidebar("player_navigation_v343", player_page_display)
-
-if st.sidebar.button("🚪 Logout", use_container_width=True):
-    forget_device_script()
-    player_logout()
-
-st.markdown('<div class="ld-internal-brand">LAST DEMONS <span>PLAYER AREA</span></div>', unsafe_allow_html=True)
-
 
 # ============================================================
 # PLAYER HOME

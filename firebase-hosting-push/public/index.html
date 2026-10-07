@@ -36,6 +36,15 @@ firebase.initializeApp({
 });
 
 const messaging = firebase.messaging();
+messaging.onMessage(async (payload) => {
+  const data = payload.data || {};
+  if (!["founder", "player"].includes(data.identity_type) || Notification.permission !== "granted") return;
+  const registration = await navigator.serviceWorker.getRegistration("/");
+  if (registration) await registration.showNotification(data.title || "Last Demons", {
+    body: data.body || "", icon: "/icons/icon-192.png", badge: "/icons/icon-192.png",
+    data: {identity_type: data.identity_type}
+  });
+});
 const hash = new URLSearchParams(location.hash.slice(1));
 const assertion = hash.get("a") || "";
 let returnUrl = hash.get("r") || "";
@@ -124,7 +133,7 @@ enable.addEventListener("click", async () => {
     }
 
     history.replaceState(null, "", location.pathname);
-    status.textContent = "✅ Notifiche attivate.";
+    status.textContent = "✅ Notifiche attivate per questa area e questo account. Le precedenti associazioni di questo browser sono state disattivate.";
 
     if (returnUrl) {
       status.textContent += " Ritorno all'app…";
