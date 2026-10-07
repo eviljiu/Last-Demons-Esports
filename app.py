@@ -2055,8 +2055,45 @@ if requested in nav_pages:
     st.session_state["unified_navigation"] = requested
 if st.session_state.get("unified_navigation") not in nav_pages:
     st.session_state["unified_navigation"] = "🏠 Home"
-selected_page = st.sidebar.radio("COMMAND CENTER", nav_pages, key="unified_navigation",
-    format_func=lambda label: _badge_label(label, counts.get(label, 0)))
+# Keep one selected page across both groups; buttons do not create two active menus.
+selected_page = st.session_state["unified_navigation"]
+st.session_state["unified_navigation"] = selected_page
+
+
+def _select_sidebar_page(page):
+    st.session_state["unified_navigation"] = page
+
+
+def _sidebar_page_button(page):
+    count = int(counts.get(page, 0) or 0)
+    label = f"{page} · {count}" if count else page
+    st.sidebar.button(
+        label, key=f"ld_sidebar_page_{page}", use_container_width=True,
+        type="primary" if selected_page == page else "secondary",
+        on_click=_select_sidebar_page, args=(page,),
+    )
+
+
+if manager_access:
+    st.sidebar.markdown(
+        '<div style="margin:18px 0 10px;color:#fff;font-size:12px;font-weight:800;letter-spacing:1.4px;">FOUNDER UTILITY</div>',
+        unsafe_allow_html=True,
+    )
+    for page in staff_pages:
+        _sidebar_page_button(page)
+    st.sidebar.markdown(
+        '<hr style="border:0;border-top:1px solid #fff;margin:20px 0;">',
+        unsafe_allow_html=True,
+    )
+
+st.sidebar.markdown(
+    '<div style="margin:12px 0 10px;color:#fff;font-size:12px;font-weight:800;letter-spacing:1.4px;">PLAYER AREA</div>',
+    unsafe_allow_html=True,
+)
+for page in player_pages:
+    _sidebar_page_button(page)
+if is_owner(player) and not manager_access:
+    _sidebar_page_button("🛡️ Ruoli organizzazione")
 auto_close_mobile_sidebar("unified_navigation", selected_page)
 if st.sidebar.button("🚪 Logout", use_container_width=True):
     player_logout()
