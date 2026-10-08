@@ -110,7 +110,7 @@ except KeyError as exc:
     )
     st.stop()
 
-# Persistent Player login (30 days)
+# Persistent Player login (15 days)
 # AUTH_SECRET is optional: if absent, FOUNDER_PASSWORD is used as signing secret.
 AUTH_SECRET = str(st.secrets.get("AUTH_SECRET", FOUNDER_PASSWORD)).strip()
 if not AUTH_SECRET:
@@ -151,7 +151,7 @@ def _current_public_app_url() -> str:
     return ""
 
 
-REMEMBER_DAYS = 30
+REMEMBER_DAYS = 15
 REMEMBER_COOKIE = "ld_player_device"
 
 def validate_storage_config():
@@ -248,15 +248,15 @@ def auto_close_mobile_sidebar(nav_key: str, current_value: str):
 
 def active_season_v241():
     cached = st.session_state.get("_active_season")
-    if cached:
+    if cached and time.monotonic() - st.session_state.get("_active_season_at", 0) < 30:
         return cached
     rows = db_query(
         "SELECT id, name, started_at FROM seasons WHERE is_active=TRUE ORDER BY id DESC LIMIT 1",
         fetchall=True,
     ) or []
     season = rows[0] if rows else None
-    if season:
-        st.session_state["_active_season"] = season
+    st.session_state["_active_season"] = season
+    st.session_state["_active_season_at"] = time.monotonic()
     return season
 
 
@@ -742,12 +742,25 @@ def db_pool():
         options="-c statement_timeout=8000 -c idle_in_transaction_session_timeout=10000",
     )
 
+@st.cache_resource(show_spinner=False)
+def _db_connection_gate():
+    # Leave headroom for startup jobs and background database activity.
+    return threading.BoundedSemaphore(18)
+
+
 def get_conn():
-    conn = db_pool().getconn()
-    if conn.closed:
-        db_pool().putconn(conn, close=True)
+    gate = _db_connection_gate()
+    if not gate.acquire(timeout=10):
+        raise TimeoutError("Database occupato: riprova tra qualche secondo")
+    try:
         conn = db_pool().getconn()
-    return conn
+        if conn.closed:
+            db_pool().putconn(conn, close=True)
+            conn = db_pool().getconn()
+        return conn
+    except BaseException:
+        gate.release()
+        raise
 
 def release_conn(conn):
     try:
@@ -760,6 +773,8 @@ def release_conn(conn):
     except Exception:
         try: conn.close()
         except Exception: pass
+    finally:
+        _db_connection_gate().release()
 
 
 def _sql(query: str) -> str:
@@ -993,7 +1008,7 @@ def _query_version_key(query: str):
     versions = _cache_versions()
     return tuple((table, versions[table]) for table in _query_tables(query))
 
-@st.cache_data(ttl=1800, max_entries=1024, show_spinner=False)
+@st.cache_data(ttl=20, max_entries=384, show_spinner=False)
 def _db_read_cached(query: str, params_tuple: tuple, version_key: tuple):
     conn = get_conn()
     try:
@@ -1005,15 +1020,20 @@ def _db_read_cached(query: str, params_tuple: tuple, version_key: tuple):
 
 
 def _session_read_cache():
+    now = time.monotonic()
+    if now - st.session_state.get("_ld_hot_reads_at", 0.0) > 10:
+        st.session_state["_ld_hot_reads"] = {}
+        st.session_state["_ld_hot_reads_at"] = now
     hot = st.session_state.setdefault("_ld_hot_reads", {})
     # Keep the per-session cache bounded for long-lived Founder and Player sessions.
-    if len(hot) > 160:
+    if len(hot) > 80:
         hot.clear()
     return hot
 
 def clear_read_caches(changed_query: str = ""):
     """Clear this session and invalidate only tables changed by a committed write."""
     st.session_state["_ld_hot_reads"] = {}
+    st.session_state["_ld_hot_reads_at"] = time.monotonic()
     st.session_state.pop("_active_season", None)
     if changed_query:
         versions = _cache_versions()
@@ -1026,7 +1046,7 @@ def db_query(query, params=(), fetchall=False, commit=False):
     normalized = query.lstrip().upper()
     is_select = normalized.startswith("SELECT") and not commit
 
-    if is_select:
+    if is_select and "password_hash" not in query.lower():
         version_key = _query_version_key(query)
         key = (query, params, version_key)
         hot = _session_read_cache()
@@ -1107,7 +1127,8 @@ def normalize_rating_formula():
         commit=True,
     )
 
-normalize_rating_formula()
+# Rating migration must be run deliberately, not during application startup.
+# See rating_migration.sql in the release archive.
 
 # ============================================================
 # SECURITY / HELPERS
@@ -1129,7 +1150,7 @@ def make_remember_token(activision_id: str) -> str:
     payload = json.dumps({
         "sub": activision_id,
         "exp": int(time.time()) + REMEMBER_DAYS * 86400,
-        "v": 2,
+        "v": 3,
         "auth": auth_stamp(candidate),
     }, separators=(",", ":")).encode("utf-8")
     body = _token_b64e(payload)
@@ -1151,7 +1172,7 @@ def verify_remember_token(token: str):
         if int(payload.get("exp", 0)) < int(time.time()):
             return None
         candidate = get_player(str(payload.get("sub", "")), fresh=True)
-        if payload.get("v") != 2 or not session_matches(candidate, payload.get("sub"), payload.get("auth")):
+        if payload.get("v") != 3 or not session_matches(candidate, payload.get("sub"), payload.get("auth")):
             return None
         return candidate[1]
     except Exception:
@@ -1160,7 +1181,8 @@ def verify_remember_token(token: str):
 
 def remember_device_script(token: str):
     # Persist server-visible token before rerun; mirror to localStorage as a durable fallback.
-    st.query_params["device_token"] = token
+    # Browser storage remains legacy; a proper HttpOnly cookie requires a trusted
+    # same-origin endpoint outside Streamlit's iframe-based components.
     components.html(
         f"""<script>
         try {{
@@ -1219,6 +1241,9 @@ def try_restore_player_session():
                 st.session_state.player_logged_in = True
                 st.session_state.player_id = candidate[1]
                 st.session_state["auth_stamp"] = auth_stamp(candidate)
+                # Do not leave a reusable credential in a copied profile URL.
+                if "device_token" in st.query_params:
+                    del st.query_params["device_token"]
                 return
         forget_device_script()
     else:
@@ -1719,14 +1744,16 @@ def public_player_card(activision_id: str):
                COALESCE(AVG(COALESCE(placement_score,
                    CASE WHEN matches_played > 0 THEN wins * 100.0 / matches_played ELSE 0 END)),0)
         FROM submissions
-        WHERE activision_id=? AND status='Approved'
+        WHERE activision_id=? AND status='Approved' AND season_id=(
+            SELECT id FROM seasons WHERE is_active=TRUE ORDER BY id DESC LIMIT 1
+        )
         """,
         (act,),
         fetchall=True,
-    ) or [(0, 0, 0, 0)]
+    ) or [(0, 0, 0, 0, 0)]
     kills, wins, matches, rating, win_rate = stats_rows[0]
 
-    st.markdown('<div class="ld-section">OFFICIAL PLAYER CARD</div>', unsafe_allow_html=True)
+    st.markdown('<div class="ld-section">PROFILO PLAYER · LAST DEMONS</div>', unsafe_allow_html=True)
     if banner:
         st.image(banner, use_container_width=True)
 
@@ -1742,7 +1769,7 @@ def public_player_card(activision_id: str):
         a, b, c, d = st.columns(4)
         a.metric("💀 Kill", int(kills or 0))
         b.metric("🏆 Win", int(wins or 0))
-        c.metric("⚡ Win Rate", f"{win_rate:.1f}%")
+        c.metric("⚡ Win Rate", f"{float(win_rate or 0):.1f}%")
         d.metric("🔥 Rating", f"{float(rating or 0):.0f}")
 
 
@@ -1906,6 +1933,14 @@ st.session_state.pop("founder_logged_in", None)
 for legacy_param in ("founder", "founder_token"):
     if legacy_param in st.query_params:
         del st.query_params[legacy_param]
+_public_profile_id = str(st.query_params.get("player", "") or "").strip()
+if _public_profile_id:
+    if len(_public_profile_id) > 64 or any(unicodedata.category(ch).startswith("C") for ch in _public_profile_id):
+        st.error("Link profilo non valido.")
+    else:
+        public_player_card(_public_profile_id)
+    st.stop()
+
 try_restore_player_session()
 
 if not st.session_state.player_logged_in:
@@ -1916,13 +1951,12 @@ if not st.session_state.player_logged_in:
         unsafe_allow_html=True,
     )
 
-    st.markdown('<div class="ld-section">JOIN LAST DEMONS</div>', unsafe_allow_html=True)
 
     portal_mode = st.radio(
         "PORTALE",
-        ["🔥 REGISTRATI", "🎮 ACCEDI"],
+        ["🎮 ACCEDI", "🔥 REGISTRATI"],
         horizontal=True,
-        key="public_portal_mode_v28",
+        key="public_portal_mode_v29",
     )
     left, right = st.columns([1.25, 1], gap="large")
 
@@ -1983,7 +2017,7 @@ if not st.session_state.player_logged_in:
                     placeholder="DemonKing#1234567")
                 login_password=st.text_input("Password",type="password")
                 remember_device = st.checkbox(
-                    "Ricorda questo dispositivo per 30 giorni",
+                    "Ricorda questo dispositivo per 15 giorni",
                     value=True,
                     help="La password non viene salvata sul dispositivo.",
                 )
@@ -2076,7 +2110,7 @@ _player_pending, _player_unread = db_query(
       (SELECT COUNT(*) FROM notifications WHERE activision_id=? AND is_read=FALSE)""",
     (player_id, player_id), fetchall=True,
 )[0]
-player_pages = ["🏠 Home", "🏆 Leaderboard", "📸 Carica Prova", "🔔 Notifiche", "👤 Il mio Profilo", "🪪 Player Card"]
+player_pages = ["🏠 Home", "🏆 Leaderboard", "📸 Carica Prova", "🔔 Notifiche", "👤 Il mio Profilo"]
 staff_pages = ["📊 Dashboard", "🔔 Notifiche organizzazione", "📢 Comunicazioni", "👥 Candidature",
                "📸 Prove Player", "🎮 Gestione Player", "🗓️ Stagioni"]
 nav_pages = player_pages + (staff_pages if manager_access else [])
@@ -3405,17 +3439,15 @@ elif player_page == "🔔 Notifiche":
                             )
                             st.rerun()
 
-elif player_page == "🪪 Player Card":
-    st.markdown('<div class="ld-section">PLAYER CARD CONDIVISIBILE</div>', unsafe_allow_html=True)
-    public_player_card(player_id)
-    st.info(
-        "Per condividere la card, usa il link pubblico della tua app aggiungendo "
-        f"`?player={player_id}` alla fine."
-    )
-
-
 elif player_page == "👤 Il mio Profilo":
     st.markdown('<div class="ld-section">IL MIO PROFILO</div>', unsafe_allow_html=True)
+    _profile_base = _current_public_app_url()
+    if _profile_base:
+        _profile_link = _profile_base + "?player=" + quote(player_id, safe="")
+        st.text_input("🔗 Link pubblico del tuo profilo", value=_profile_link,
+                      help="Condividi questo link: mostra solo le informazioni pubbliche del profilo.")
+    else:
+        st.caption("Link pubblico disponibile dopo aver configurato APP_PUBLIC_URL.")
 
     stats = db_query(
         """
@@ -3427,7 +3459,9 @@ elif player_page == "👤 Il mio Profilo":
           COALESCE(AVG(COALESCE(placement_score,
               CASE WHEN matches_played > 0 THEN wins * 100.0 / matches_played ELSE 0 END)),0)
         FROM submissions
-        WHERE activision_id=? AND status='Approved'
+        WHERE activision_id=? AND status='Approved' AND season_id=(
+            SELECT id FROM seasons WHERE is_active=TRUE ORDER BY id DESC LIMIT 1
+        )
         """,
         (player_id,),
         fetchall=True,
@@ -3506,10 +3540,10 @@ elif player_page == "👤 Il mio Profilo":
                     st.error("Errore durante il caricamento delle immagini. Riprova.")
 
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Kill", int(kills))
-    c2.metric("Vittorie", int(wins))
-    c3.metric("Win Rate", f"{wr:.1f}%")
-    c4.metric("Rating", f"{rating:.0f}")
+    c1.metric("💀 Kill", int(kills))
+    c2.metric("🏆 Vittorie", int(wins))
+    c3.metric("⚡ Win Rate", f"{wr:.1f}%")
+    c4.metric("🔥 Rating", f"{rating:.0f}")
 
     history = db_query(
         """
