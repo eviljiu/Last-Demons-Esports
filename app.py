@@ -11,7 +11,6 @@ import uuid
 import unicodedata
 import requests
 import threading
-from functools import lru_cache
 import psycopg2
 from psycopg2 import pool as pg_pool
 from datetime import datetime
@@ -64,7 +63,7 @@ def install_mobile_app_identity():
 
           let icon = d.head.querySelector('link[rel="apple-touch-icon"]');
           if (!icon) {{ icon = d.createElement("link"); icon.rel = "apple-touch-icon"; d.head.appendChild(icon); }}
-          icon.href = "{APP_ICON_DATA_URI}";
+          icon.href = window.parent.location.origin + "/app/static/apple-touch-icon.png";
 
           if (!d.head.querySelector('link[data-ld-manifest="1"]')) {{
             const manifest = {{
@@ -74,7 +73,7 @@ def install_mobile_app_identity():
               start_url: window.parent.location.pathname,
               background_color: "#08090c",
               theme_color: "#08090c",
-              icons: [{{src: "{APP_ICON_DATA_URI}", sizes: "192x192", type: "image/png"}}]
+              icons: [{{src: "/app/static/icon-192.png", sizes: "192x192", type: "image/png"}}]
             }};
             const blob = new Blob([JSON.stringify(manifest)], {{type:"application/manifest+json"}});
             const link = d.createElement("link");
@@ -154,7 +153,6 @@ def _current_public_app_url() -> str:
 
 REMEMBER_DAYS = 30
 REMEMBER_COOKIE = "ld_player_device"
-REGISTERED_DEVICE_MARKER = "ld_registered_device"
 
 def validate_storage_config():
     missing = []
@@ -249,11 +247,17 @@ def auto_close_mobile_sidebar(nav_key: str, current_value: str):
     )
 
 def active_season_v241():
+    cached = st.session_state.get("_active_season")
+    if cached:
+        return cached
     rows = db_query(
         "SELECT id, name, started_at FROM seasons WHERE is_active=TRUE ORDER BY id DESC LIMIT 1",
         fetchall=True,
     ) or []
-    return rows[0] if rows else None
+    season = rows[0] if rows else None
+    if season:
+        st.session_state["_active_season"] = season
+    return season
 
 
 # ============================================================
@@ -270,6 +274,21 @@ st.markdown(
         --ld-panel: rgba(15,17,22,.90);
         --ld-border: rgba(255,255,255,.09);
         --ld-muted: #9ca3af;
+    }
+
+    @keyframes ldNotificationBounce {
+        0%, 100% { transform: translateY(0) scale(1); }
+        45% { transform: translateY(-4px) scale(1.08); }
+        70% { transform: translateY(1px) scale(.98); }
+    }
+
+    .ld-notification-pulse {
+        display: inline-block;
+        color: #ff1f2d;
+        font-size: 1.18rem;
+        line-height: 1;
+        animation: ldNotificationBounce 1.05s ease-in-out infinite;
+        filter: drop-shadow(0 0 5px rgba(255,31,45,.65));
     }
 
     html, body, [class*="css"] {
@@ -513,6 +532,24 @@ st.markdown(
 }
 [data-testid="stSidebar"] img { transition: none !important; }
 
+/* Muted translucent red cards for the sidebar navigation. */
+[data-testid="stSidebar"] .stButton > button {
+    background: linear-gradient(135deg, rgba(91,17,27,.68), rgba(48,10,17,.62)) !important;
+    border: 1px solid rgba(184,55,70,.40) !important;
+    color: #f7e9eb !important;
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.035), 0 5px 14px rgba(0,0,0,.18) !important;
+}
+[data-testid="stSidebar"] .stButton > button:hover {
+    background: linear-gradient(135deg, rgba(116,22,34,.76), rgba(61,11,19,.70)) !important;
+    border-color: rgba(225,75,91,.58) !important;
+}
+[data-testid="stSidebar"] .stButton > button[kind="primary"],
+[data-testid="stSidebar"] [data-testid="baseButton-primary"] {
+    background: linear-gradient(135deg, rgba(128,24,37,.82), rgba(67,12,21,.76)) !important;
+    border-color: rgba(239,94,108,.68) !important;
+    box-shadow: inset 0 0 0 1px rgba(255,105,118,.08), 0 6px 18px rgba(75,4,12,.28) !important;
+}
+
 
 .role-pill,.division-pill{display:inline-block;padding:4px 9px;margin:3px 4px 0 0;border-radius:999px;
 font-family:"Arial Narrow","Roboto Condensed","Trebuchet MS",sans-serif;font-size:.72rem;font-weight:900;
@@ -649,6 +686,20 @@ letter-spacing:.10em;text-transform:uppercase;line-height:1.2}
   [data-testid="stMetric"]{min-height:auto!important}
   .stButton>button,.stLinkButton>a{min-height:44px!important}
   [data-testid="stSidebar"] [role="radiogroup"] label{padding-top:.52rem!important;padding-bottom:.52rem!important}
+  /* Keep the unread badge beside the notification button on narrow screens. */
+  [data-testid="stSidebar"] [data-testid="stHorizontalBlock"]{
+    flex-direction:row!important;
+    flex-wrap:nowrap!important;
+    align-items:center!important;
+    gap:.35rem!important;
+  }
+  [data-testid="stSidebar"] [data-testid="stHorizontalBlock"] > div{
+    min-width:0!important;
+  }
+  [data-testid="stSidebar"] [data-testid="stHorizontalBlock"] > div:last-child{
+    flex:0 0 1.55rem!important;
+    width:1.55rem!important;
+  }
 }
 </style>
     """,
@@ -934,41 +985,23 @@ CACHE_TABLES = (
 def _cache_versions():
     return {table: 0 for table in CACHE_TABLES}
 
-@st.cache_resource(show_spinner=False)
-def _cache_lock():
-    return threading.RLock()
-
-@lru_cache(maxsize=512)
 def _query_tables(query: str):
     q = query.lower()
     return tuple(table for table in CACHE_TABLES if re.search(rf"\b{re.escape(table)}\b", q))
 
 def _query_version_key(query: str):
-    with _cache_lock():
-        versions = _cache_versions()
-        tables = tuple((table, versions[table]) for table in _query_tables(query))
-    # Bound freshness even when another process or Supabase changes the data.
-    return tables + (("_ttl", int(time.monotonic() // 30)),)
+    versions = _cache_versions()
+    return tuple((table, versions[table]) for table in _query_tables(query))
 
-def _read_rows(query, params_tuple):
-    """A standalone SELECT needs no BEGIN/ROLLBACK round trips."""
+@st.cache_data(ttl=1800, max_entries=1024, show_spinner=False)
+def _db_read_cached(query: str, params_tuple: tuple, version_key: tuple):
     conn = get_conn()
-    previous_autocommit = conn.autocommit
     try:
-        conn.autocommit = True
         with conn.cursor() as cur:
             cur.execute(_sql(query), params_tuple)
             return cur.fetchall()
     finally:
-        try:
-            if not conn.closed:
-                conn.autocommit = previous_autocommit
-        finally:
-            release_conn(conn)
-
-@st.cache_data(ttl=30, max_entries=1024, show_spinner=False)
-def _db_read_cached(query: str, params_tuple: tuple, version_key: tuple):
-    return _read_rows(query, params_tuple)
+        release_conn(conn)
 
 
 def _session_read_cache():
@@ -979,30 +1012,19 @@ def _session_read_cache():
     return hot
 
 def clear_read_caches(changed_query: str = ""):
-    invalidate_queries([changed_query] if changed_query else [])
-
-
-def invalidate_queries(queries):
-    """Keep unrelated cached data and invalidate each changed table once."""
-    touched = {table for query in queries for table in _query_tables(query)}
-    with _cache_lock():
+    """Clear this session and invalidate only tables changed by a committed write."""
+    st.session_state["_ld_hot_reads"] = {}
+    st.session_state.pop("_active_season", None)
+    if changed_query:
         versions = _cache_versions()
-        for table in touched:
+        for table in _query_tables(changed_query):
             versions[table] += 1
-    hot = _session_read_cache()
-    for key in list(hot):
-        if not touched or touched.intersection(_query_tables(key[0])):
-            hot.pop(key, None)
-    if not touched or "seasons" in touched:
-        st.session_state.pop("_active_season", None)
 
 def db_query(query, params=(), fetchall=False, commit=False):
     """Fast DB helper: session hot-cache + shared Streamlit cache + pooled PostgreSQL."""
     params = tuple(params or ())
     normalized = query.lstrip().upper()
-    is_select = not commit and (normalized.startswith("SELECT") or (
-        normalized.startswith("WITH") and not re.search(r"\b(INSERT|UPDATE|DELETE|MERGE)\b", normalized)
-    ))
+    is_select = normalized.startswith("SELECT") and not commit
 
     if is_select:
         version_key = _query_version_key(query)
@@ -1041,7 +1063,14 @@ def db_transaction(statements):
                 cur.execute(_sql(query), tuple(params or ()))
                 changed.append(query)
         conn.commit()
-        invalidate_queries(changed)
+        st.session_state["_ld_hot_reads"] = {}
+        st.session_state.pop("_active_season", None)
+        versions = _cache_versions()
+        touched = set()
+        for query in changed:
+            touched.update(_query_tables(query))
+        for table in touched:
+            versions[table] += 1
     except Exception:
         conn.rollback()
         raise
@@ -1135,7 +1164,7 @@ def remember_device_script(token: str):
     components.html(
         f"""<script>
         try {{
-          window.parent.localStorage.setItem({json.dumps(REMEMBER_COOKIE)}, {json.dumps(token)});
+          localStorage.setItem({json.dumps(REMEMBER_COOKIE)}, {json.dumps(token)});
         }} catch(e) {{}}
         </script>""",
         height=0,
@@ -1151,42 +1180,7 @@ def forget_device_script():
     components.html(
         f"""<script>
         try {{
-          window.parent.localStorage.removeItem({json.dumps(REMEMBER_COOKIE)});
-        }} catch(e) {{}}
-        </script>""",
-        height=0,
-    )
-
-
-def mark_registered_device_script():
-    """Remember that this browser has already completed player registration."""
-    st.query_params["registered_device"] = "1"
-    try:
-        if "register" in st.query_params:
-            del st.query_params["register"]
-    except Exception:
-        pass
-    components.html(
-        f"""<script>
-        try {{
-          window.parent.localStorage.setItem({json.dumps(REGISTERED_DEVICE_MARKER)}, "1");
-        }} catch(e) {{}}
-        </script>""",
-        height=0,
-    )
-
-
-def restore_registered_device_script():
-    """Expose the local registration marker to Streamlit once on app open."""
-    components.html(
-        f"""<script>
-        try {{
-          const key = {json.dumps(REGISTERED_DEVICE_MARKER)};
-          const u = new URL(window.parent.location.href);
-          if (window.parent.localStorage.getItem(key) === "1" && !u.searchParams.get("registered_device")) {{
-            u.searchParams.set("registered_device", "1");
-            window.parent.location.replace(u.toString());
-          }}
+          localStorage.removeItem({json.dumps(REMEMBER_COOKIE)});
         }} catch(e) {{}}
         </script>""",
         height=0,
@@ -1199,7 +1193,7 @@ def restore_device_script():
         f"""<script>
         try {{
           const key = {json.dumps(REMEMBER_COOKIE)};
-          const token = window.parent.localStorage.getItem(key);
+          const token = localStorage.getItem(key);
           const u = new URL(window.parent.location.href);
           if (token && !u.searchParams.get("device_token")) {{
             u.searchParams.set("device_token", token);
@@ -1755,7 +1749,13 @@ def public_player_card(activision_id: str):
 
 def db_read_fresh(query, params=(), fetchall=True):
     """Authorization and credentials must never use UI/shared caches."""
-    return _read_rows(query, tuple(params or ()))
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(_sql(query), tuple(params or ()))
+            return cur.fetchall()
+    finally:
+        release_conn(conn)
 
 
 def require_staff():
@@ -1798,9 +1798,10 @@ def staff_transaction(statements, target_id=None, account_control=False, deletin
                 if account_control and re.search(r"\bSET\s+password_hash\s*=", query, re.I):
                     cur.execute("UPDATE push_subscriptions SET is_active=FALSE WHERE identity_type='player' AND identity_id=%s", (target_id,))
         conn.commit()
-        invalidate_queries([query for query, _ in statements] + (
-            ["UPDATE push_subscriptions"] if account_control else []
-        ))
+        for query, _ in statements:
+            clear_read_caches(query)
+        if account_control:
+            clear_read_caches("UPDATE push_subscriptions")
         return result
     except PermissionError as exc:
         conn.rollback()
@@ -1831,11 +1832,8 @@ def set_org_role(target_id, new_role):
             if not role or role not in allowed_roles(actor, target):
                 raise PermissionError("Non hai il permesso di assegnare o modificare questo ruolo.")
             cur.execute("UPDATE players SET org_role=%s WHERE activision_id=%s", (role, target_id))
-            message = f"🛡️ Il tuo ruolo nell'organizzazione è ora: {role}."
-            cur.execute("INSERT INTO notifications (activision_id,message) VALUES (%s,%s)", (target_id, message))
         conn.commit()
-        invalidate_queries(["UPDATE players SET org_role", "INSERT INTO notifications"])
-        _send_push_async("player", target_id, "Last Demons", message)
+        clear_read_caches("UPDATE players SET org_role")
     except PermissionError as exc:
         conn.rollback()
         st.warning(str(exc))
@@ -1847,27 +1845,23 @@ def set_org_role(target_id, new_role):
         release_conn(conn)
 
 
-def _save_role(target_id, role_key):
-    set_org_role(target_id, st.session_state[role_key])
-    _finish_action("Ruolo aggiornato.")
-    st.rerun()
-
-
-def render_role_editor(target_id, actor=None, target=None):
-    actor = actor if actor is not None else get_player(st.session_state.get("player_id"), fresh=True)
-    target = target if target is not None else get_player(target_id, fresh=True)
+def render_role_editor(target_id):
+    actor = get_player(st.session_state.get("player_id"), fresh=True)
+    target = get_player(target_id, fresh=True)
     options = allowed_roles(actor, target)
     if not options:
         st.info("Questo ruolo è riservato a Founder, Co-Founder e al proprietario.")
         return
     current = canonical_role(target[9])
     # Re-key if permissions change; stale widget state cannot retain a privileged choice.
-    role_key = f"org_role_{target_id}_{','.join(options)}"
-    st.selectbox("Ruolo", options,
+    new_role = st.selectbox("Ruolo", options,
         index=options.index(current) if current in options else 0,
-        key=role_key)
-    st.button("💾 Salva ruolo", use_container_width=True,
-              on_click=_save_role, args=(target_id, role_key))
+        key=f"org_role_{target_id}_{','.join(options)}")
+    if st.button("💾 Salva ruolo", use_container_width=True):
+        set_org_role(target_id, new_role)
+        notify_player(target_id, f"🛡️ Il tuo ruolo nell'organizzazione è ora: {new_role}.")
+        st.success("Ruolo aggiornato.")
+        st.rerun()
 
 
 def get_player(activision_id, fresh=False):
@@ -1882,664 +1876,6 @@ def get_player(activision_id, fresh=False):
     ) or []
     return rows[0] if rows else None
 
-
-def player_transaction(statements):
-    """Recheck the current account inside the transaction, including after an upload."""
-    conn = get_conn()
-    try:
-        with conn.cursor() as cur:
-            _locked_accounts(cur)
-            for query, params in statements:
-                cur.execute(_sql(query), tuple(params or ()))
-        conn.commit()
-        invalidate_queries([query for query, _ in statements])
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        release_conn(conn)
-
-
-def _set_state(key, value):
-    st.session_state[key] = value
-
-
-def _finish_action(message="", target=None):
-    # Callbacks commit before the next render. A fragment requests one full render
-    # after writes so sidebar counts, account roles and other sections stay current.
-    if message:
-        st.session_state["_ld_flash"] = message
-    if target:
-        st.session_state["unified_navigation"] = target
-    st.session_state["_ld_refresh_shell"] = True
-
-
-def _navigate(page):
-    _finish_action(target=page)
-
-
-def _fragment_player(staff=False):
-    if st.session_state.pop("_ld_refresh_shell", False):
-        st.rerun()
-    actor = get_player(st.session_state.get("player_id"), fresh=True)
-    if not session_matches(actor, st.session_state.get("player_id"), st.session_state.get("auth_stamp")):
-        forget_device_script()
-        st.session_state.clear()
-        st.rerun()
-    if staff and not is_staff(actor):
-        st.session_state["unified_navigation"] = "🏠 Home"
-        st.rerun()
-    return actor
-
-
-def _paged_rows(query, params, key, page_size=20):
-    state_key = f"_ld_page_{key}"
-    signature = (query, tuple(params))
-    if st.session_state.get(state_key + "_filter") != signature:
-        st.session_state[state_key + "_filter"] = signature
-        st.session_state[state_key] = 0
-    page = max(0, int(st.session_state.get(state_key, 0)))
-    rows = db_query(query + " LIMIT ? OFFSET ?", (*params, page_size + 1, page * page_size), fetchall=True) or []
-    if not rows and page:
-        page = 0
-        st.session_state[state_key] = 0
-        rows = db_query(query + " LIMIT ? OFFSET ?", (*params, page_size + 1, 0), fetchall=True) or []
-    return rows[:page_size], (state_key, page, len(rows) > page_size)
-
-
-def _page_controls(paging):
-    key, page, more = paging
-    if page or more:
-        left, middle, right = st.columns([1, 2, 1])
-        left.button("← Precedenti", key=key + "_prev", disabled=page == 0,
-                    on_click=_set_state, args=(key, page - 1), use_container_width=True)
-        middle.caption(f"Pagina {page + 1}")
-        right.button("Successive →", key=key + "_next", disabled=not more,
-                     on_click=_set_state, args=(key, page + 1), use_container_width=True)
-
-
-def _notification_action(staff, action, nid=None, target=None):
-    table = "founder_notifications" if staff else "notifications"
-    conditions, params = [], []
-    if not staff:
-        conditions.append("activision_id=?")
-        params.append(st.session_state.get("player_id"))
-    if nid is not None:
-        conditions.append("id=?")
-        params.append(nid)
-    elif action == "read_all":
-        conditions += ["is_read=FALSE", "COALESCE(is_archived,FALSE)=FALSE"]
-    else:
-        raise ValueError("Notifica mancante")
-    assignments = {
-        "read": "is_read=TRUE", "read_all": "is_read=TRUE",
-        "archive": "is_archived=TRUE, is_read=TRUE", "restore": "is_archived=FALSE",
-    }
-    if action == "delete":
-        query = f"DELETE FROM {table}"
-    else:
-        query = f"UPDATE {table} SET {assignments[action]}"
-    query += " WHERE " + " AND ".join(conditions)
-    transaction = staff_transaction if staff else player_transaction
-    transaction([(query, tuple(params))])
-    _finish_action(target=target)
-    st.rerun()
-
-
-@st.fragment
-def render_notifications(staff=False):
-    actor = _fragment_player(staff)
-    aid = actor[1]
-    title = "NOTIFICHE FOUNDER" if staff else "NOTIFICHE"
-    st.markdown(f'<div class="ld-section">{title}</div>', unsafe_allow_html=True)
-    render_push_opt_in("player", aid)
-    scope = "founder" if staff else "player"
-    archived = st.toggle("🗃️ Mostra archivio", key=f"{scope}_notes_archive")
-    table = "founder_notifications" if staff else "notifications"
-    columns = "id,message,is_read,created_at,event_type,activision_id" if staff else "id,message,is_read,created_at"
-    query = f"SELECT {columns} FROM {table} WHERE COALESCE(is_archived,FALSE)=?"
-    params = (archived,)
-    if not staff:
-        query += " AND activision_id=?"
-        params += (aid,)
-    notes, paging = _paged_rows(query + " ORDER BY created_at DESC,id DESC", params, f"{scope}_notes")
-    if not archived:
-        unread_query = f"SELECT COUNT(*) FROM {table} WHERE is_read=FALSE AND COALESCE(is_archived,FALSE)=FALSE"
-        unread_params = ()
-        if not staff:
-            unread_query += " AND activision_id=?"
-            unread_params = (aid,)
-        unread = db_query(unread_query, unread_params, fetchall=True)[0][0]
-        c1, c2 = st.columns([1, 2])
-        c1.metric("Da leggere", int(unread))
-        if unread:
-            c2.button("✓ Segna tutte come lette", key=f"{scope}_read_all",
-                      on_click=_notification_action, args=(staff, "read_all"), use_container_width=True)
-    if not notes:
-        st.info("Archivio vuoto." if archived else "Nessuna notifica attiva.")
-    for row in notes:
-        nid, message, is_read, created = row[:4]
-        with st.container(border=True):
-            st.markdown(("✓ " if is_read else "● ") + html.escape(str(message)))
-            meta = f"{row[5]} · " if staff and row[5] else ""
-            st.caption(meta + str(created)[:16])
-            a, b = st.columns(2)
-            if archived:
-                if not staff:
-                    a.button("↩️ Ripristina", key=f"{scope}_restore_{nid}", on_click=_notification_action,
-                             args=(staff, "restore", nid), use_container_width=True)
-                b.button("🗑️ Elimina definitivamente", key=f"{scope}_delete_{nid}", on_click=_notification_action,
-                         args=(staff, "delete", nid), use_container_width=True)
-            else:
-                target = "👤 Il mio Profilo"
-                if staff:
-                    target = {"application": "👥 Candidature", "proof": "📸 Prove Player"}.get(row[4])
-                if target:
-                    a.button("Apri →", key=f"{scope}_open_{nid}", on_click=_notification_action,
-                             args=(staff, "read", nid, target), use_container_width=True)
-                elif not is_read:
-                    a.button("✓ Letta", key=f"{scope}_read_{nid}", on_click=_notification_action,
-                             args=(staff, "read", nid), use_container_width=True)
-                b.button("🗃️ Archivia", key=f"{scope}_archive_{nid}", on_click=_notification_action,
-                         args=(staff, "archive", nid), use_container_width=True)
-                if staff:
-                    st.button("🗑️ Elimina", key=f"{scope}_delete_{nid}", on_click=_notification_action,
-                              args=(staff, "delete", nid), use_container_width=True)
-    _page_controls(paging)
-
-
-def _review_candidate(pid, aid, approve):
-    role_label = st.session_state.get(f"role_{pid}", "Élite")
-    if role_label not in ("Élite", "LD Player"):
-        raise ValueError("Selezione non valida")
-    role = "Academy" if role_label == "LD Player" else role_label
-    message = (f"✅ Candidatura approvata. Sei stato assegnato a {role_label}." if approve
-               else "❌ La candidatura non è stata approvata.")
-    # Only the winning Pending -> reviewed transition creates a notification.
-    query = """WITH changed AS (
-        UPDATE players SET status=?, selection=CASE WHEN ? THEN ? ELSE selection END
-        WHERE id=? AND activision_id=? AND status='Pending' RETURNING activision_id
-    ), archived AS (
-        UPDATE founder_notifications SET is_archived=TRUE,is_read=TRUE
-        WHERE event_type='application' AND activision_id IN (SELECT activision_id FROM changed)
-          AND COALESCE(is_archived,FALSE)=FALSE
-    ) INSERT INTO notifications (activision_id,message)
-      SELECT activision_id,? FROM changed RETURNING activision_id"""
-    rows = staff_transaction([(query, ("Approved" if approve else "Rejected", approve, role, pid, aid, message))],
-                             target_id=aid, account_control=True)
-    if rows:
-        _send_push_async("player", aid, "Last Demons", message)
-    _finish_action("Candidatura aggiornata." if rows else "Candidatura già gestita.")
-    st.rerun()
-
-
-def _review_proof(sid, approve):
-    message_sql = "'✅ Prova #' || id || ' approvata: +' || ROUND(rating_gained::numeric,0) || ' rating.'" if approve else "'❌ Prova #' || id || ' rifiutata.'"
-    query = f"""WITH changed AS (
-        UPDATE submissions SET status=? WHERE id=? AND status='Pending'
-        RETURNING id,activision_id,rating_gained
-    ) INSERT INTO notifications (activision_id,message)
-      SELECT activision_id,{message_sql} FROM changed RETURNING activision_id,message"""
-    rows = staff_transaction([(query, ("Approved" if approve else "Rejected", sid))])
-    for aid, message in rows or []:
-        _send_push_async("player", aid, "Last Demons", message)
-    _finish_action("Prova aggiornata." if rows else "Prova già gestita.")
-    st.rerun()
-
-
-def _archive_announcement(nid):
-    staff_transaction([("UPDATE announcements SET is_active=FALSE WHERE id=?", (nid,))])
-    _finish_action("Comunicazione archiviata.")
-    st.rerun()
-
-
-
-@st.fragment
-def render_profile_editor():
-    player = _fragment_player()
-    player_id = player[1]
-    with st.expander("🖼️ Personalizza profilo", expanded=False):
-        with st.form("profile_media_form", enter_to_submit=False):
-            avatar_file = st.file_uploader(
-                "Foto profilo",
-                type=["png", "jpg", "jpeg", "webp"],
-                key="profile_avatar_upload",
-            )
-            banner_file = st.file_uploader(
-                "Banner profilo",
-                type=["png", "jpg", "jpeg", "webp"],
-                key="profile_banner_upload",
-            )
-            st.caption(
-                "Le immagini vengono ottimizzate automaticamente in WebP: "
-                "avatar max 512×512, banner max 1600×900. Upload max 15 MB."
-            )
-    
-            if st.form_submit_button("💾 Salva immagini profilo", type="primary", use_container_width=True):
-                if not avatar_file and not banner_file:
-                    st.warning("Seleziona almeno una nuova immagine.")
-                else:
-                    new_avatar = player[7]
-                    new_banner = player[8]
-                    uploaded_now = []
-                    try:
-                        if avatar_file:
-                            new_avatar = save_profile_media(avatar_file, player_id, "avatar")
-                            uploaded_now.append(new_avatar)
-                        if banner_file:
-                            new_banner = save_profile_media(banner_file, player_id, "banner")
-                            uploaded_now.append(new_banner)
-    
-                        player_transaction([(
-                            "UPDATE players SET profile_image_url=?, banner_url=? WHERE activision_id=?",
-                            (new_avatar, new_banner, player_id),
-                        )])
-                        uploaded_now.clear()
-    
-                        if avatar_file and player[7] and player[7] != new_avatar:
-                            delete_storage_url(player[7])
-                        if banner_file and player[8] and player[8] != new_banner:
-                            delete_storage_url(player[8])
-    
-                        _finish_action("Profilo aggiornato.")
-                        st.rerun()
-                    except ValueError as exc:
-                        for orphan in uploaded_now:
-                            delete_storage_url(orphan)
-                        st.error(str(exc))
-                    except Exception:
-                        for orphan in uploaded_now:
-                            delete_storage_url(orphan)
-                        st.error("Errore durante il caricamento delle immagini. Riprova.")
-
-
-@st.fragment
-def render_candidates():
-    player = _fragment_player(staff=True)
-    player_id = player[1]
-    st.markdown('<div class="ld-section">CANDIDATURE IN ATTESA</div>', unsafe_allow_html=True)
-
-    rows, paging = _paged_rows(
-        "SELECT id,activision_id,platform,created_at FROM players WHERE status='Pending' ORDER BY created_at ASC,id ASC",
-        (), "candidates",
-    )
-
-    if not rows:
-        st.info("Nessuna candidatura in attesa.")
-    else:
-        for pid, act, platform, created in rows:
-            with st.container(border=True):
-                a, b, c, d = st.columns([3, 2, 1.2, 1.2])
-                with a:
-                    st.markdown(f"### 🎮 {act}")
-                    st.caption(f"{platform} · {str(created)[:16]}")
-                with b:
-                    role_label = st.selectbox(
-                        "Selezione",
-                        ["Élite", "LD Player"],
-                        key=f"role_{pid}",
-                    )
-                    role = "Academy" if role_label == "LD Player" else role_label
-                with c:
-                    st.write("")
-                    st.button('✅ Accetta', key=f'acc_{pid}', use_container_width=True, on_click=_review_candidate, args=(pid, act, True))
-                with d:
-                    st.write("")
-                    st.button('❌ Rifiuta', key=f'rej_{pid}', use_container_width=True, on_click=_review_candidate, args=(pid, act, False))
-
-    _page_controls(paging)
-
-
-@st.fragment
-def render_proofs():
-    player = _fragment_player(staff=True)
-    player_id = player[1]
-    st.markdown('<div class="ld-section">ARCHIVIO PROVE PER ACTIVISION ID</div>', unsafe_allow_html=True)
-
-
-    pending_by_sender = staff_query(
-        """
-        SELECT activision_id, COUNT(*), MAX(timestamp)
-        FROM submissions
-        WHERE status='Pending'
-        GROUP BY activision_id
-        ORDER BY MAX(timestamp) DESC
-        """,
-        fetchall=True,
-    ) or []
-    proof_search = st.text_input(
-        "🔎 Cerca chi ha inviato la prova",
-        placeholder="Activision ID...",
-        key="founder_proof_search_v350",
-    ).strip().lower()
-    if pending_by_sender:
-        st.markdown("### 🔥 Da valutare")
-        for sender_id, pending_count, last_sent in pending_by_sender:
-            if proof_search and proof_search not in str(sender_id).lower():
-                continue
-            pc1, pc2 = st.columns([4,1])
-            with pc1:
-                st.markdown(f"**🎮 {html.escape(str(sender_id))}** · {int(pending_count)} {'prova' if int(pending_count)==1 else 'prove'}")
-                st.caption(f"Ultimo invio: {str(last_sent)[:16]}")
-            with pc2:
-                st.button('Apri →', key=f'proof_sender_{sender_id}', use_container_width=True, on_click=_set_state, args=("proof_sender_focus_v350", str(sender_id)))
-    else:
-        st.success("✅ Nessuna prova in attesa.")
-
-    ids = [
-        r[0]
-        for r in staff_query(
-            """SELECT activision_id FROM players UNION SELECT activision_id FROM submissions ORDER BY activision_id""",
-            fetchall=True,
-        ) or []
-    ]
-    if proof_search:
-        ids = [x for x in ids if proof_search in str(x).lower()]
-
-    if not ids:
-        st.info("Nessuna prova caricata.")
-    else:
-        f1, f2 = st.columns([2, 1])
-        with f1:
-            focus_sender = st.session_state.pop("proof_sender_focus_v350", None)
-            if focus_sender in ids:
-                st.session_state["proof_selected_player"] = focus_sender
-            if st.session_state.get("proof_selected_player") not in ids:
-                st.session_state["proof_selected_player"] = ids[0]
-            selected = st.selectbox("🎮 Activision ID", ids, key="proof_selected_player")
-        with f2:
-            proof_filter = st.selectbox(
-                "Stato",
-                ["Pending", "Approved", "Rejected", "Tutte"],
-            )
-
-        proof_query = """SELECT id,kills,wins,matches_played,rating_gained,
-            photo_path,month_year,status,timestamp,placement,placement_score
-            FROM submissions WHERE activision_id=?"""
-        proof_params = (selected,)
-        if proof_filter != "Tutte":
-            proof_query += " AND status=?"
-            proof_params += (proof_filter,)
-        proof_query += " ORDER BY CASE status WHEN 'Pending' THEN 0 WHEN 'Approved' THEN 1 ELSE 2 END,timestamp DESC,id DESC"
-        rows, paging = _paged_rows(proof_query, proof_params, "proofs", page_size=12)
-
-        st.subheader(f"📂 {selected}")
-        st.caption(f"{len(rows)} prove visualizzate")
-
-        if not rows:
-            st.info("Nessuna prova con questo filtro.")
-
-        for row in rows:
-            sid, kills, wins, matches, rating, path, month, status, ts, placement, placement_score = row
-            with st.expander(
-                f"{badge(status)} · {ts} · {kills} Kill · {wins} Win",
-                expanded=status == "Pending",
-            ):
-                img, info = st.columns([2.3, 1], gap="large")
-                with img:
-                    if path:
-                        st.image(path, caption=f"Prova #{sid}", use_container_width=True)
-                    else:
-                        st.info("Immagine non più disponibile. I dati della prova restano salvati.")
-                with info:
-                    st.markdown(f"### 🎮 {selected}")
-                    st.write(f"**Kill:** {kills}")
-                    st.write(f"**Vittorie:** {wins}")
-                    st.write(f"**Partite:** {matches if matches else 'N/D'}")
-                    if placement:
-                        st.write(f"**Posizionamento:** {int(placement)}° su 16")
-                    if placement_score is not None:
-                        st.write(f"**Win Rate:** {float(placement_score):.1f}%")
-                    elif matches:
-                        st.write(f"**Win Rate:** {wins / matches * 100:.1f}%")
-                    if placement:
-                        st.write(f"**Moltiplicatore Rating:** ×{placement_rating_multiplier(placement):.1f}")
-                    st.write(f"**Rating:** +{rating:.1f}".rstrip("0").rstrip("."))
-                    st.write(f"**Mese:** {month}")
-
-                    if status == "Pending":
-                        st.button('✅ APPROVA', key=f'approve_{sid}', type='primary', use_container_width=True, on_click=_review_proof, args=(sid, True))
-
-                        st.button('❌ RIFIUTA', key=f'reject_{sid}', use_container_width=True, on_click=_review_proof, args=(sid, False))
-
-        _page_controls(paging)
-
-
-@st.fragment
-def render_leaderboard():
-    player = _fragment_player(staff=False)
-    player_id = player[1]
-    st.markdown('<div class="ld-section">LEADERBOARD ARENA</div>', unsafe_allow_html=True)
-
-    season_rows = db_query(
-        "SELECT id, name, is_active FROM seasons ORDER BY id DESC",
-        fetchall=True,
-    ) or []
-    season_labels = {
-        f"{name}{' · ATTIVA' if active else ''}": sid
-        for sid, name, active in season_rows
-    }
-    selected_season_label = st.selectbox("🗓️ Stagione", list(season_labels.keys()))
-    selected_season_id = season_labels[selected_season_label]
-
-    month_rows = db_query(
-        """
-        SELECT DISTINCT month_year
-        FROM submissions
-        WHERE status='Approved' AND season_id=?
-        ORDER BY month_year DESC
-        """,
-        (selected_season_id,),
-        fetchall=True,
-    ) or []
-    available_months = [m[0] for m in month_rows]
-    current_month = datetime.now().strftime("%Y-%m")
-    if current_month not in available_months:
-        available_months.insert(0, current_month)
-    selected_month = st.selectbox("📅 Mese", available_months)
-
-    selection_label = st.radio(
-        "Divisione",
-        ["Élite", "LD Player"],
-        horizontal=True,
-        key="leaderboard_division_v24",
-    )
-    selection = "Academy" if selection_label == "LD Player" else selection_label
-
-    metric_label = st.segmented_control(
-        "Modalità classifica",
-        ["💀 TOP FRAGGER", "🏆 WIN RATE"],
-        default="💀 TOP FRAGGER",
-        key="leaderboard_metric_v24",
-    )
-    metric = "kills" if metric_label == "💀 TOP FRAGGER" else "win_rate"
-    if metric == "win_rate":
-        st.caption(
-            "Win Rate competitivo basato sul piazzamento: "
-            "1° 100% · 2° 90% · 3° 83% · 4° 77% · 5° 70% · 6° 64% · "
-            "7° 58% · 8° 51% · 9° 45% · 10° 39% · 11° 32% · 12° 26% · "
-            "13° 19% · 14° 13% · 15° 6% · 16° 0%."
-        )
-
-    data = db_query(
-        """
-        SELECT p.activision_id,
-               p.selection,
-               p.profile_image_url,
-               COALESCE(SUM(s.kills),0) AS kills,
-               COALESCE(SUM(s.wins),0) AS wins,
-               COALESCE(SUM(s.matches_played),0) AS matches,
-               COALESCE(SUM(s.rating_gained),0) AS rating,
-               COALESCE(AVG(COALESCE(s.placement_score,
-                   CASE WHEN s.matches_played > 0 THEN s.wins * 100.0 / s.matches_played ELSE 0 END)),0) AS win_rate
-        FROM players p
-        LEFT JOIN submissions s
-          ON s.activision_id=p.activision_id
-         AND s.month_year=?
-         AND s.status='Approved'
-         AND s.season_id=?
-        WHERE p.selection=? AND p.status='Approved'
-        GROUP BY p.activision_id, p.selection, p.profile_image_url
-        HAVING COUNT(s.id) > 0
-        """,
-        (selected_month, selected_season_id, selection),
-        fetchall=True,
-    ) or []
-
-    rows = [
-        {
-            "activision_id": r[0],
-            "selection": r[1],
-            "avatar": r[2],
-            "kills": r[3],
-            "wins": r[4],
-            "matches": r[5],
-            "rating": r[6],
-            "win_rate": r[7],
-        }
-        for r in data
-    ]
-
-    # Season leader summary independent of selected month.
-    season_summary = db_query(
-        """
-        SELECT p.activision_id,
-               COALESCE(SUM(s.kills),0),
-               COALESCE(SUM(s.wins),0),
-               COALESCE(SUM(s.matches_played),0),
-               COALESCE(AVG(COALESCE(s.placement_score,
-                   CASE WHEN s.matches_played > 0 THEN s.wins * 100.0 / s.matches_played ELSE 0 END)),0)
-        FROM players p
-        JOIN submissions s ON s.activision_id=p.activision_id
-        WHERE p.selection=? AND p.status='Approved'
-          AND s.status='Approved' AND s.season_id=?
-        GROUP BY p.activision_id
-        """,
-        (selection, selected_season_id),
-        fetchall=True,
-    ) or []
-
-    if season_summary:
-        top_frag = max(season_summary, key=lambda r: r[1])
-        wr_candidates = [r for r in season_summary if int(r[3] or 0) > 0]
-        top_wr = max(wr_candidates, key=lambda r: float(r[4] or 0)) if wr_candidates else None
-        sc1, sc2 = st.columns(2)
-        sc1.metric("🔥 Season Kill Leader", top_frag[0], f"{int(top_frag[1])} kill")
-        if top_wr:
-            sc2.metric(
-                "⚡ Season Win Rate Leader",
-                top_wr[0],
-                f"{float(top_wr[4]):.1f}%",
-            )
-
-    render_esports_leaderboard(rows, metric, player_id)
-
-
-@st.fragment
-def render_proof_upload():
-    player = _fragment_player(staff=False)
-    player_id = player[1]
-    st.markdown('<div class="ld-section">CARICA PROVA MATCH</div>', unsafe_allow_html=True)
-
-    st.markdown(
-        f"""
-        <div class="ld-card">
-          <div class="ld-welcome">🎮 {player_id}</div>
-          <div class="ld-muted">
-          La prova verrà associata automaticamente al tuo account.
-          Non puoi caricare statistiche per altri player.
-          </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    with st.form("player_proof_form", clear_on_submit=True, enter_to_submit=False):
-        c1, c2 = st.columns(2)
-        with c1:
-            kills = st.number_input("💀 Kill", min_value=0, step=1, value=0)
-        with c2:
-            placement = st.selectbox(
-                "🏁 Posizionamento team",
-                list(range(1, 17)),
-                format_func=lambda x: f"{x}° · {PLACEMENT_POINTS[x]:.0f}%"
-            )
-        matches = 1
-        wins = 1 if int(placement) == 1 else 0
-        placement_score = calculate_placement_score(placement)
-        st.caption(
-            f"Win Rate match: {placement_score:.0f}% · "
-            f"{'Vittoria' if wins else 'Nessuna vittoria'}"
-        )
-        multiplier = placement_rating_multiplier(placement)
-        preview_base = int(kills) + (int(wins) * 20)
-        preview_rating = round(preview_base * multiplier, 1)
-        st.caption(
-            f"Rating: {preview_base} base × {multiplier:.1f} = {preview_rating:g}"
-        )
-
-        uploaded = st.file_uploader(
-            "🖼️ Screenshot della prova",
-            type=["png", "jpg", "jpeg", "webp"],
-        )
-        st.caption("📦 Dimensione massima immagine: 50 MB.")
-
-        send = st.form_submit_button(
-            "📤 INVIA AL FOUNDER",
-            type="primary",
-            use_container_width=True,
-        )
-
-        if send:
-            if int(placement) < 1 or int(placement) > 16:
-                st.error("Il posizionamento deve essere compreso tra 1 e 16.")
-            elif int(kills) < 0:
-                st.error("Le kill non possono essere negative.")
-            elif uploaded is None:
-                st.error("Carica uno screenshot.")
-            elif getattr(uploaded, "size", 0) > MAX_PLAYER_IMAGE_BYTES:
-                st.error("L'immagine supera il limite massimo di 50 MB.")
-            else:
-                try:
-                    path = save_proof(uploaded, player_id)
-                except Exception as exc:
-                    st.error(f"❌ Impossibile caricare la prova: {exc}")
-                    st.info("La prova non è stata salvata nel database. Puoi correggere il problema e riprovare.")
-                    st.stop()
-                rating = calculate_rating(int(kills), int(wins), int(placement))
-                month = datetime.now().strftime("%Y-%m")
-
-                try:
-                    player_transaction([(
-                        """
-                        INSERT INTO submissions
-                        (activision_id,kills,wins,rating_gained,photo_path,
-                         month_year,status,matches_played,season_id,placement,placement_score)
-                        VALUES (?,?,?,?,?,?,'Pending',?,?,?,?)
-                        """,
-                        (
-                            player_id,
-                            int(kills),
-                            int(wins),
-                            rating,
-                            path,
-                            month,
-                            int(matches),
-                            (lambda season: season[0] if season else None)(active_season_v241()),
-                            int(placement),
-                            float(placement_score),
-                        ),
-                    ), (
-                        "INSERT INTO founder_notifications (event_type,activision_id,message) VALUES (?,?,?)",
-                        ("proof", player_id, "Nuova prova caricata e in attesa di approvazione."),
-                    )])
-                except Exception:
-                    delete_storage_url(path)
-                    raise
-
-                _send_push_async("founder", "founder", "Last Demons · Organizzazione", "Nuova prova caricata e in attesa di approvazione.")
-                _finish_action("✅ Prova caricata, in attesa di approvazione.")
-                st.rerun()
 
 # ============================================================
 # SESSION
@@ -2570,39 +1906,24 @@ st.session_state.pop("founder_logged_in", None)
 for legacy_param in ("founder", "founder_token"):
     if legacy_param in st.query_params:
         del st.query_params[legacy_param]
-restore_registered_device_script()
 try_restore_player_session()
 
 if not st.session_state.player_logged_in:
-    # A registered device opens directly on the lightweight login view.
-    # The full hero and roster are intentionally skipped to reduce first paint time.
-    registered_device = st.query_params.get("registered_device") == "1"
-    registration_requested = st.query_params.get("register") == "1"
-    fast_login_view = registered_device or not registration_requested
-    if fast_login_view:
-        st.markdown(
-            '<div class="ld-section">ACCESSO PLAYER</div>',
-            unsafe_allow_html=True,
-        )
-    else:
-        hero()
+    hero()
 
     st.markdown(
         '<div class="ld-section">ACCESSO ORGANIZZAZIONE</div>',
         unsafe_allow_html=True,
     )
 
-    if registered_device:
-        st.info("Questo dispositivo è già registrato. Accedi con il tuo account Player.")
-        portal_mode = "🎮 ACCEDI"
-    elif registration_requested:
-        portal_mode = "🔥 REGISTRATI"
-    else:
-        # Safe fallback for devices registered before persistent markers existed.
-        portal_mode = "🎮 ACCEDI"
-        if st.button("🔥 NUOVO DISPOSITIVO · REGISTRATI", use_container_width=True):
-            st.query_params["register"] = "1"
-            st.rerun()
+    st.markdown('<div class="ld-section">JOIN LAST DEMONS</div>', unsafe_allow_html=True)
+
+    portal_mode = st.radio(
+        "PORTALE",
+        ["🔥 REGISTRATI", "🎮 ACCEDI"],
+        horizontal=True,
+        key="public_portal_mode_v28",
+    )
     left, right = st.columns([1.25, 1], gap="large")
 
     with left:
@@ -2629,15 +1950,12 @@ if not st.session_state.player_logged_in:
                         st.error("Le password non coincidono.")
                     else:
                         try:
-                            db_transaction([
-                                ("""INSERT INTO players (activision_id,platform,status,password_hash,org_role)
-                                 VALUES (?,?,'Pending',?,'Player')""", (clean_id,platform,hash_password(password))),
-                                ("INSERT INTO founder_notifications (event_type,activision_id,message) VALUES (?,?,?)",
-                                 ("application", clean_id, "Nuova candidatura ricevuta.")),
-                            ])
+                            db_query("""INSERT INTO players
+                                (activision_id,platform,status,password_hash,org_role)
+                                VALUES (?,?,'Pending',?,'Player')""",
+                                (clean_id,platform,hash_password(password)),commit=True)
                             st.session_state["checked_candidate"]=clean_id
-                            mark_registered_device_script()
-                            _send_push_async("founder", "founder", "Last Demons · Organizzazione", "Nuova candidatura ricevuta.")
+                            notify_founder("application", "Nuova candidatura ricevuta.", clean_id)
                             st.success("Candidatura inviata. Attendi l'approvazione Founder.")
                         except psycopg2.IntegrityError:
                             st.error("Questo Activision ID è già registrato.")
@@ -2682,7 +2000,6 @@ if not st.session_state.player_logged_in:
                         st.session_state.player_logged_in=True
                         st.session_state.player_id=candidate[1]
                         st.session_state["auth_stamp"] = auth_stamp(candidate)
-                        mark_registered_device_script()
                         if remember_device:
                             remember_device_script(make_remember_token(candidate[1]))
                         else:
@@ -2697,26 +2014,25 @@ if not st.session_state.player_logged_in:
             <b>02</b> · Attendi l'approvazione.<br><br>
             <b>03</b> · Entra da <b>ACCEDI</b>.<br><br>
             <b>04</b> · Accedi al Command Center.</div></div>""",unsafe_allow_html=True)
-        if not fast_login_view:
-            st.markdown("### 👥 Roster ufficiale")
-            roster=db_query("""SELECT activision_id,selection,org_role,profile_image_url
-                FROM players WHERE status='Approved'
-                ORDER BY selection,LOWER(activision_id) LIMIT 12""",fetchall=True) or []
-            if not roster: st.caption("Il roster apparirà qui dopo le prime approvazioni.")
-            else:
-                for act,sel,role,avatar in roster:
-                    with st.container(border=True):
-                        c1,c2=st.columns([1,4])
-                        with c1:
-                            if avatar: st.image(avatar,width=52)
-                            else: st.write("👤")
-                        with c2:
-                            st.markdown(f"**{html.escape(str(act))}**")
-                            safe_role = html.escape(str(role or "Player"))
-                            safe_sel = html.escape(str(sel or "Non Assegnato"))
-                            st.markdown(f'<span class="role-pill">{safe_role}</span> '
-                                        f'<span class="division-pill">{safe_sel}</span>',
-                                        unsafe_allow_html=True)
+        st.markdown("### 👥 Roster ufficiale")
+        roster=db_query("""SELECT activision_id,selection,org_role,profile_image_url
+            FROM players WHERE status='Approved'
+            ORDER BY selection,LOWER(activision_id) LIMIT 12""",fetchall=True) or []
+        if not roster: st.caption("Il roster apparirà qui dopo le prime approvazioni.")
+        else:
+            for act,sel,role,avatar in roster:
+                with st.container(border=True):
+                    c1,c2=st.columns([1,4])
+                    with c1:
+                        if avatar: st.image(avatar,width=52)
+                        else: st.write("👤")
+                    with c2:
+                        st.markdown(f"**{html.escape(str(act))}**")
+                        safe_role = html.escape(str(role or "Player"))
+                        safe_sel = html.escape(str(sel or "Non Assegnato"))
+                        st.markdown(f'<span class="role-pill">{safe_role}</span> '
+                                    f'<span class="division-pill">{safe_sel}</span>',
+                                    unsafe_allow_html=True)
 
 
     st.stop()
@@ -2737,7 +2053,6 @@ def _base_nav_label(value: str) -> str:
 
 
 # One account, one menu. Every run obtains authorization directly from PostgreSQL.
-st.session_state.pop("_ld_refresh_shell", None)
 player = get_player(st.session_state.player_id, fresh=True)
 if not session_matches(player, st.session_state.get("player_id"), st.session_state.get("auth_stamp")):
     forget_device_script()
@@ -2747,9 +2062,6 @@ if not session_matches(player, st.session_state.get("player_id"), st.session_sta
 player_id = player[1]
 player_selection = display_selection(player[3])
 manager_access = is_staff(player)
-flash = st.session_state.pop("_ld_flash", None)
-if flash:
-    st.success(flash)
 
 st.sidebar.markdown(
     f'<div style="text-align:center"><img src="{sidebar_logo_data_uri()}" style="width:145px;max-width:90%;"></div>',
@@ -2761,7 +2073,7 @@ st.sidebar.caption(f"{canonical_role(player[9]) or 'Player'} · {player_selectio
 _player_pending, _player_unread = db_query(
     """SELECT
       (SELECT COUNT(*) FROM submissions WHERE activision_id=? AND status='Pending'),
-      (SELECT COUNT(*) FROM notifications WHERE activision_id=? AND is_read=FALSE AND COALESCE(is_archived,FALSE)=FALSE)""",
+      (SELECT COUNT(*) FROM notifications WHERE activision_id=? AND is_read=FALSE)""",
     (player_id, player_id), fetchall=True,
 )[0]
 player_pages = ["🏠 Home", "🏆 Leaderboard", "📸 Carica Prova", "🔔 Notifiche", "👤 Il mio Profilo", "🪪 Player Card"]
@@ -2802,6 +2114,23 @@ def _select_sidebar_page(page):
 def _sidebar_page_button(page):
     count = int(counts.get(page, 0) or 0)
     label = f"{page} · {count}" if count else page
+    # Keep the unread indicator lightweight: it is purely visual and rendered
+    # only for notification entries when unread items exist.
+    if page in {"🔔 Notifiche organizzazione", "🔔 Notifiche"} and count > 0:
+        button_col, badge_col = st.sidebar.columns([0.88, 0.12], gap="small",
+                                                     vertical_alignment="center")
+        with button_col:
+            st.button(
+                label, key=f"ld_sidebar_page_{page}", use_container_width=True,
+                type="primary" if selected_page == page else "secondary",
+                on_click=_select_sidebar_page, args=(page,),
+            )
+        with badge_col:
+            st.markdown(
+                '<span class="ld-notification-pulse" title="Notifiche non lette">❗</span>',
+                unsafe_allow_html=True,
+            )
+        return
     st.sidebar.button(
         label, key=f"ld_sidebar_page_{page}", use_container_width=True,
         type="primary" if selected_page == page else "secondary",
@@ -2837,7 +2166,7 @@ if selected_page == "🛡️ Ruoli organizzazione" and is_owner(player):
     st.markdown('### 🛡️ Ruoli organizzazione')
     role_targets = db_read_fresh("SELECT activision_id FROM players ORDER BY LOWER(activision_id)")
     target = st.selectbox("Account", [r[0] for r in role_targets])
-    render_role_editor(target, actor=player)
+    render_role_editor(target)
     st.stop()
 
 founder_page = selected_page if manager_access and selected_page in staff_pages else None
@@ -2851,6 +2180,7 @@ player_page = selected_page if selected_page in player_pages else "🏠 Home"
 # ============================================================
 
 if founder_page:
+    require_staff()
     st.markdown('<div class="ld-internal-brand">LAST DEMONS <span>COMMAND CENTER</span></div>', unsafe_allow_html=True)
 
     if founder_page == "📊 Dashboard":
@@ -2871,14 +2201,17 @@ if founder_page:
         c1.metric("Player ufficiali", approved)
         with c2:
             st.metric("Candidature da gestire", pending)
-            if pending:
-                st.button('Apri candidature →', key='dash_open_candidates', use_container_width=True, on_click=_navigate, args=('👥 Candidature',))
+            if pending and st.button("Apri candidature →", key="dash_open_candidates", use_container_width=True):
+                st.session_state["_founder_nav_target"] = "👥 Candidature"
+                st.rerun()
         with c3:
             st.metric("Prove da valutare", proofs)
-            if proofs:
-                st.button('Apri prove →', key='dash_open_proofs', use_container_width=True, on_click=_navigate, args=('📸 Prove Player',))
-        if founder_unread:
-            st.button(f'🔔 {founder_unread} notifiche Founder non lette →', key='dash_open_notes', use_container_width=True, on_click=_navigate, args=('🔔 Notifiche organizzazione',))
+            if proofs and st.button("Apri prove →", key="dash_open_proofs", use_container_width=True):
+                st.session_state["_founder_nav_target"] = "📸 Prove Player"
+                st.rerun()
+        if founder_unread and st.button(f"🔔 {founder_unread} notifiche Founder non lette →", key="dash_open_notes", use_container_width=True):
+            st.session_state["_founder_nav_target"] = "🔔 Notifiche"
+            st.rerun()
 
         alerts = founder_alerts()
         now_utc = pd.Timestamp.now(tz="UTC")
@@ -2908,11 +2241,13 @@ if founder_page:
         if pending or proofs:
             op1, op2 = st.columns(2)
             with op1:
-                if pending:
-                    st.button(f'👥 Gestisci {int(pending)} candidature', key='ops_candidates', use_container_width=True, on_click=_navigate, args=('👥 Candidature',))
+                if pending and st.button(f"👥 Gestisci {int(pending)} candidature", key="ops_candidates", use_container_width=True):
+                    st.session_state["_founder_nav_target"] = "👥 Candidature"
+                    st.rerun()
             with op2:
-                if proofs:
-                    st.button(f'📸 Valuta {int(proofs)} prove', key='ops_proofs', use_container_width=True, on_click=_navigate, args=('📸 Prove Player',))
+                if proofs and st.button(f"📸 Valuta {int(proofs)} prove", key="ops_proofs", use_container_width=True):
+                    st.session_state["_founder_nav_target"] = "📸 Prove Player"
+                    st.rerun()
 
         st.markdown("### 🏆 TOP 5 ORGANIZZAZIONE")
         perf = staff_query(
@@ -2973,7 +2308,71 @@ if founder_page:
                     st.caption(str(created)[:16])
 
     elif founder_page == "🔔 Notifiche":
-        render_notifications(staff=True)
+        st.markdown('<div class="ld-section">NOTIFICHE FOUNDER</div>', unsafe_allow_html=True)
+        render_push_opt_in("player", player_id)
+
+        archive_col1, archive_col2 = st.columns([4, 1])
+        with archive_col2:
+            with st.popover("🗃️ Archivio"):
+                archived_notes = staff_query(
+                    "SELECT id,event_type,activision_id,message,created_at FROM founder_notifications WHERE COALESCE(is_archived,FALSE)=TRUE ORDER BY created_at DESC LIMIT 200",
+                    fetchall=True,
+                ) or []
+                if not archived_notes:
+                    st.caption("Archivio vuoto.")
+                else:
+                    st.caption(f"{len(archived_notes)} notifiche archiviate")
+                    for anid, aevent, aact, amsg, acreated in archived_notes:
+                        st.markdown(f"**{html.escape(str(amsg))}**")
+                        meta = f"{aact} · " if aact else ""
+                        st.caption(f"{meta}{str(acreated)[:16]}")
+                        if st.button("🗑️ Elimina definitivamente", key=f"delete_archived_{anid}", use_container_width=True):
+                            staff_query("DELETE FROM founder_notifications WHERE id=?", (anid,), commit=True)
+                            st.rerun()
+                        st.divider()
+
+        founder_notes = staff_query(
+            "SELECT id,event_type,activision_id,message,is_read,created_at FROM founder_notifications WHERE COALESCE(is_archived,FALSE)=FALSE ORDER BY created_at DESC LIMIT 150",
+            fetchall=True,
+        ) or []
+        unread_founder = sum(1 for row in founder_notes if not row[4])
+        c1, c2 = st.columns([1, 2])
+        c1.metric("Da leggere", unread_founder)
+        with c2:
+            if unread_founder and st.button("✓ Segna tutte come lette", use_container_width=True):
+                staff_query("UPDATE founder_notifications SET is_read=TRUE WHERE is_read=FALSE AND COALESCE(is_archived,FALSE)=FALSE", commit=True)
+                st.rerun()
+        if not founder_notes:
+            st.info("Nessuna notifica Founder.")
+        else:
+            icons = {"application":"👥", "proof":"📸", "system":"🔔"}
+            for nid, event_type, act_id, message, is_read, created in founder_notes:
+                with st.container(border=True):
+                    left, right = st.columns([5,1])
+                    with left:
+                        nuova = " · NUOVA" if not is_read else ""
+                        st.markdown(f"**{icons.get(event_type,'🔔')} {html.escape(str(message))}{nuova}**")
+                        meta = f"Activision ID: {act_id} · " if act_id else ""
+                        st.caption(f"{meta}{str(created)[:16]}")
+                    with right:
+                        target = "👥 Candidature" if event_type == "application" else ("📸 Prove Player" if event_type == "proof" else None)
+                        if target and st.button("Apri →", key=f"founder_open_{nid}", use_container_width=True):
+                            if not is_read:
+                                staff_query("UPDATE founder_notifications SET is_read=TRUE WHERE id=?", (nid,), commit=True)
+                            st.session_state["_founder_nav_target"] = target
+                            st.rerun()
+                        elif not is_read and st.button("✓ Letta", key=f"founder_note_{nid}", use_container_width=True):
+                            staff_query("UPDATE founder_notifications SET is_read=TRUE WHERE id=?", (nid,), commit=True)
+                            st.rerun()
+                    actions1, actions2 = st.columns(2)
+                    with actions1:
+                        if st.button("🗃️ Archivia", key=f"founder_archive_{nid}", use_container_width=True):
+                            staff_query("UPDATE founder_notifications SET is_archived=TRUE, is_read=TRUE WHERE id=?", (nid,), commit=True)
+                            st.rerun()
+                    with actions2:
+                        if st.button("🗑️ Elimina", key=f"founder_delete_{nid}", use_container_width=True):
+                            staff_query("DELETE FROM founder_notifications WHERE id=?", (nid,), commit=True)
+                            st.rerun()
 
     elif founder_page == "📢 Comunicazioni":
         st.markdown('<div class="ld-section">COMUNICAZIONI ORG</div>', unsafe_allow_html=True)
@@ -3002,14 +2401,219 @@ if founder_page:
                 st.markdown(f"### {title}")
                 st.write(body)
                 st.caption(f"{str(created)[:16]} · {'Attiva' if active else 'Archiviata'}")
-                if active:
-                    st.button('Archivia', key=f'archive_news_{nid}', on_click=_archive_announcement, args=(nid,))
+                if active and st.button("Archivia", key=f"archive_news_{nid}"):
+                    staff_query("UPDATE announcements SET is_active=FALSE WHERE id=?", (nid,), commit=True)
+                    st.rerun()
 
     elif founder_page == "👥 Candidature":
-        render_candidates()
+        st.markdown('<div class="ld-section">CANDIDATURE IN ATTESA</div>', unsafe_allow_html=True)
+
+        rows = staff_query(
+            """
+            SELECT id, activision_id, platform, created_at
+            FROM players
+            WHERE status='Pending'
+            ORDER BY created_at ASC
+            """,
+            fetchall=True,
+        ) or []
+
+        if not rows:
+            st.info("Nessuna candidatura in attesa.")
+        else:
+            for pid, act, platform, created in rows:
+                with st.container(border=True):
+                    a, b, c, d = st.columns([3, 2, 1.2, 1.2])
+                    with a:
+                        st.markdown(f"### 🎮 {act}")
+                        st.caption(f"{platform} · {str(created)[:16]}")
+                    with b:
+                        role_label = st.selectbox(
+                            "Selezione",
+                            ["Élite", "LD Player"],
+                            key=f"role_{pid}",
+                        )
+                        role = "Academy" if role_label == "LD Player" else role_label
+                    with c:
+                        st.write("")
+                        if st.button("✅ Accetta", key=f"acc_{pid}", use_container_width=True):
+                            staff_query(
+                                "UPDATE players SET selection=?, status='Approved' WHERE id=?",
+                                (role, pid),
+                                commit=True, target_id=act, account_control=True,
+                            )
+                            notify_player(act, f"✅ Candidatura approvata. Sei stato assegnato a {role}.")
+                            staff_query(
+                                "UPDATE founder_notifications SET is_archived=TRUE, is_read=TRUE WHERE event_type='application' AND activision_id=? AND COALESCE(is_archived,FALSE)=FALSE",
+                                (act,),
+                                commit=True,
+                            )
+                            st.rerun()
+                    with d:
+                        st.write("")
+                        if st.button("❌ Rifiuta", key=f"rej_{pid}", use_container_width=True):
+                            staff_query(
+                                "UPDATE players SET status='Rejected' WHERE id=?",
+                                (pid,),
+                                commit=True, target_id=act, account_control=True,
+                            )
+                            notify_player(act, "❌ La candidatura non è stata approvata.")
+                            staff_query(
+                                "UPDATE founder_notifications SET is_archived=TRUE, is_read=TRUE WHERE event_type='application' AND activision_id=? AND COALESCE(is_archived,FALSE)=FALSE",
+                                (act,),
+                                commit=True,
+                            )
+                            st.rerun()
 
     elif founder_page == "📸 Prove Player":
-        render_proofs()
+        st.markdown('<div class="ld-section">ARCHIVIO PROVE PER ACTIVISION ID</div>', unsafe_allow_html=True)
+
+
+        pending_by_sender = staff_query(
+            """
+            SELECT activision_id, COUNT(*), MAX(timestamp)
+            FROM submissions
+            WHERE status='Pending'
+            GROUP BY activision_id
+            ORDER BY MAX(timestamp) DESC
+            """,
+            fetchall=True,
+        ) or []
+        proof_search = st.text_input(
+            "🔎 Cerca chi ha inviato la prova",
+            placeholder="Activision ID...",
+            key="founder_proof_search_v350",
+        ).strip().lower()
+        if pending_by_sender:
+            st.markdown("### 🔥 Da valutare")
+            for sender_id, pending_count, last_sent in pending_by_sender:
+                if proof_search and proof_search not in str(sender_id).lower():
+                    continue
+                pc1, pc2 = st.columns([4,1])
+                with pc1:
+                    st.markdown(f"**🎮 {html.escape(str(sender_id))}** · {int(pending_count)} {'prova' if int(pending_count)==1 else 'prove'}")
+                    st.caption(f"Ultimo invio: {str(last_sent)[:16]}")
+                with pc2:
+                    if st.button("Apri →", key=f"proof_sender_{sender_id}", use_container_width=True):
+                        st.session_state["proof_sender_focus_v350"] = str(sender_id)
+                        st.rerun()
+        else:
+            st.success("✅ Nessuna prova in attesa.")
+
+        ids = [
+            r[0]
+            for r in staff_query(
+                """SELECT activision_id FROM players UNION SELECT activision_id FROM submissions ORDER BY activision_id""",
+                fetchall=True,
+            ) or []
+        ]
+        if proof_search:
+            ids = [x for x in ids if proof_search in str(x).lower()]
+
+        if not ids:
+            st.info("Nessuna prova caricata.")
+        else:
+            f1, f2 = st.columns([2, 1])
+            with f1:
+                focus_sender = st.session_state.pop("proof_sender_focus_v350", None)
+                focus_index = ids.index(focus_sender) if focus_sender in ids else 0
+                selected = st.selectbox("🎮 Activision ID", ids, index=focus_index)
+            with f2:
+                proof_filter = st.selectbox(
+                    "Stato",
+                    ["Pending", "Approved", "Rejected", "Tutte"],
+                )
+
+            if proof_filter == "Tutte":
+                rows = staff_query(
+                    """
+                    SELECT id,kills,wins,matches_played,rating_gained,
+                           photo_path,month_year,status,timestamp,placement,placement_score
+                    FROM submissions
+                    WHERE activision_id=?
+                    ORDER BY
+                      CASE status WHEN 'Pending' THEN 0 WHEN 'Approved' THEN 1 ELSE 2 END,
+                      timestamp DESC
+                    LIMIT 250
+                    """,
+                    (selected,),
+                    fetchall=True,
+                ) or []
+            else:
+                rows = staff_query(
+                    """
+                    SELECT id,kills,wins,matches_played,rating_gained,
+                           photo_path,month_year,status,timestamp,placement,placement_score
+                    FROM submissions
+                    WHERE activision_id=? AND status=?
+                    ORDER BY timestamp DESC
+                    LIMIT 250
+                    """,
+                    (selected, proof_filter),
+                    fetchall=True,
+                ) or []
+
+            st.subheader(f"📂 {selected}")
+            st.caption(f"{len(rows)} prove visualizzate")
+
+            if not rows:
+                st.info("Nessuna prova con questo filtro.")
+
+            for row in rows:
+                sid, kills, wins, matches, rating, path, month, status, ts, placement, placement_score = row
+                with st.expander(
+                    f"{badge(status)} · {ts} · {kills} Kill · {wins} Win",
+                    expanded=status == "Pending",
+                ):
+                    img, info = st.columns([2.3, 1], gap="large")
+                    with img:
+                        if path:
+                            st.image(path, caption=f"Prova #{sid}", use_container_width=True)
+                        else:
+                            st.info("Immagine non più disponibile. I dati della prova restano salvati.")
+                    with info:
+                        st.markdown(f"### 🎮 {selected}")
+                        st.write(f"**Kill:** {kills}")
+                        st.write(f"**Vittorie:** {wins}")
+                        st.write(f"**Partite:** {matches if matches else 'N/D'}")
+                        if placement:
+                            st.write(f"**Posizionamento:** {int(placement)}° su 16")
+                        if placement_score is not None:
+                            st.write(f"**Win Rate:** {float(placement_score):.1f}%")
+                        elif matches:
+                            st.write(f"**Win Rate:** {wins / matches * 100:.1f}%")
+                        if placement:
+                            st.write(f"**Moltiplicatore Rating:** ×{placement_rating_multiplier(placement):.1f}")
+                        st.write(f"**Rating:** +{rating:.1f}".rstrip("0").rstrip("."))
+                        st.write(f"**Mese:** {month}")
+
+                        if status == "Pending":
+                            if st.button(
+                                "✅ APPROVA",
+                                key=f"approve_{sid}",
+                                type="primary",
+                                use_container_width=True,
+                            ):
+                                staff_query(
+                                    "UPDATE submissions SET status='Approved' WHERE id=?",
+                                    (sid,),
+                                    commit=True,
+                                )
+                                notify_player(selected, f"✅ Prova #{sid} approvata: +{rating:.0f} rating.")
+                                st.rerun()
+
+                            if st.button(
+                                "❌ RIFIUTA",
+                                key=f"reject_{sid}",
+                                use_container_width=True,
+                            ):
+                                staff_query(
+                                    "UPDATE submissions SET status='Rejected' WHERE id=?",
+                                    (sid,),
+                                    commit=True,
+                                )
+                                notify_player(selected, f"❌ Prova #{sid} rifiutata.")
+                                st.rerun()
 
     elif founder_page == "🎮 Gestione Player":
         st.markdown('<div class="ld-section">GESTIONE PLAYER</div>', unsafe_allow_html=True)
@@ -3048,7 +2652,6 @@ if founder_page:
                 key="founder_compact_player_selector_v28",
             )
             chosen_row = next(p for p in filtered_players if p[1] == chosen)
-            chosen_account = get_player(chosen, fresh=True)
 
             # Anteprima profilo del player selezionato
             if chosen_row[7]:
@@ -3095,7 +2698,7 @@ if founder_page:
                     help="Utile anche per account creati con la V1.",
                 )
                 if st.button("🔐 Salva nuova password", use_container_width=True,
-                             disabled=not can_control_account(player, chosen_account)):
+                             disabled=not can_control_account(player, get_player(chosen, fresh=True))):
                     if len(new_password) < 8:
                         st.error("Minimo 8 caratteri.")
                     else:
@@ -3108,7 +2711,7 @@ if founder_page:
 
             st.divider()
             st.markdown("### 🛡️ Ruolo organizzazione")
-            render_role_editor(chosen, actor=player, target=chosen_account)
+            render_role_editor(chosen)
 
             st.divider()
             st.markdown("### ⚠️ Rimozione player")
@@ -3124,7 +2727,7 @@ if founder_page:
                 "🗑️ RIMUOVI DEFINITIVAMENTE PLAYER",
                 type="primary",
                 use_container_width=True,
-                disabled=not confirm_remove or not can_control_account(player, chosen_account, deleting=True),
+                disabled=not confirm_remove or not can_control_account(player, get_player(chosen, fresh=True), deleting=True),
             ):
                 media_rows = staff_query(
                     "SELECT photo_path FROM submissions WHERE activision_id=?",
@@ -3440,10 +3043,14 @@ if player_page == "🏠 Home":
     c4.metric("⚡ Win Rate", f"{wr:.1f}%")
 
     if pending_count:
-        st.button(f'📸 {int(pending_count)} prove in attesa di revisione →', key='player_pending_open', use_container_width=True, on_click=_navigate, args=('📸 Carica Prova',))
+        if st.button(f"📸 {int(pending_count)} prove in attesa di revisione →", key="player_pending_open", use_container_width=True):
+            st.session_state["_player_nav_target"] = "📸 Carica Prova"
+            st.rerun()
 
     if unread:
-        st.button(f'🔔 {int(unread)} notifiche non lette →', key='player_unread_open', use_container_width=True, on_click=_navigate, args=('🔔 Notifiche',))
+        if st.button(f"🔔 {int(unread)} notifiche non lette →", key="player_unread_open", use_container_width=True):
+            st.session_state["_player_nav_target"] = "🔔 Notifiche"
+            st.rerun()
 
     st.markdown("### 🎯 PERFORMANCE CENTER")
     insight = player_performance_insights(player_id)
@@ -3484,13 +3091,319 @@ if player_page == "🏠 Home":
 # ============================================================
 
 elif player_page == "🏆 Leaderboard":
-    render_leaderboard()
+    st.markdown('<div class="ld-section">LEADERBOARD ARENA</div>', unsafe_allow_html=True)
+
+    season_rows = db_query(
+        "SELECT id, name, is_active FROM seasons ORDER BY id DESC",
+        fetchall=True,
+    ) or []
+    season_labels = {
+        f"{name}{' · ATTIVA' if active else ''}": sid
+        for sid, name, active in season_rows
+    }
+    selected_season_label = st.selectbox("🗓️ Stagione", list(season_labels.keys()))
+    selected_season_id = season_labels[selected_season_label]
+
+    month_rows = db_query(
+        """
+        SELECT DISTINCT month_year
+        FROM submissions
+        WHERE status='Approved' AND season_id=?
+        ORDER BY month_year DESC
+        """,
+        (selected_season_id,),
+        fetchall=True,
+    ) or []
+    available_months = [m[0] for m in month_rows]
+    current_month = datetime.now().strftime("%Y-%m")
+    if current_month not in available_months:
+        available_months.insert(0, current_month)
+    selected_month = st.selectbox("📅 Mese", available_months)
+
+    selection_label = st.radio(
+        "Divisione",
+        ["Élite", "LD Player"],
+        horizontal=True,
+        key="leaderboard_division_v24",
+    )
+    selection = "Academy" if selection_label == "LD Player" else selection_label
+
+    metric_label = st.segmented_control(
+        "Modalità classifica",
+        ["💀 TOP FRAGGER", "🏆 WIN RATE"],
+        default="💀 TOP FRAGGER",
+        key="leaderboard_metric_v24",
+    )
+    metric = "kills" if metric_label == "💀 TOP FRAGGER" else "win_rate"
+    if metric == "win_rate":
+        st.caption(
+            "Win Rate competitivo basato sul piazzamento: "
+            "1° 100% · 2° 90% · 3° 83% · 4° 77% · 5° 70% · 6° 64% · "
+            "7° 58% · 8° 51% · 9° 45% · 10° 39% · 11° 32% · 12° 26% · "
+            "13° 19% · 14° 13% · 15° 6% · 16° 0%."
+        )
+
+    data = db_query(
+        """
+        SELECT p.activision_id,
+               p.selection,
+               p.profile_image_url,
+               COALESCE(SUM(s.kills),0) AS kills,
+               COALESCE(SUM(s.wins),0) AS wins,
+               COALESCE(SUM(s.matches_played),0) AS matches,
+               COALESCE(SUM(s.rating_gained),0) AS rating,
+               COALESCE(AVG(COALESCE(s.placement_score,
+                   CASE WHEN s.matches_played > 0 THEN s.wins * 100.0 / s.matches_played ELSE 0 END)),0) AS win_rate
+        FROM players p
+        LEFT JOIN submissions s
+          ON s.activision_id=p.activision_id
+         AND s.month_year=?
+         AND s.status='Approved'
+         AND s.season_id=?
+        WHERE p.selection=? AND p.status='Approved'
+        GROUP BY p.activision_id, p.selection, p.profile_image_url
+        HAVING COUNT(s.id) > 0
+        """,
+        (selected_month, selected_season_id, selection),
+        fetchall=True,
+    ) or []
+
+    rows = [
+        {
+            "activision_id": r[0],
+            "selection": r[1],
+            "avatar": r[2],
+            "kills": r[3],
+            "wins": r[4],
+            "matches": r[5],
+            "rating": r[6],
+            "win_rate": r[7],
+        }
+        for r in data
+    ]
+
+    # Season leader summary independent of selected month.
+    season_summary = db_query(
+        """
+        SELECT p.activision_id,
+               COALESCE(SUM(s.kills),0),
+               COALESCE(SUM(s.wins),0),
+               COALESCE(SUM(s.matches_played),0),
+               COALESCE(AVG(COALESCE(s.placement_score,
+                   CASE WHEN s.matches_played > 0 THEN s.wins * 100.0 / s.matches_played ELSE 0 END)),0)
+        FROM players p
+        JOIN submissions s ON s.activision_id=p.activision_id
+        WHERE p.selection=? AND p.status='Approved'
+          AND s.status='Approved' AND s.season_id=?
+        GROUP BY p.activision_id
+        """,
+        (selection, selected_season_id),
+        fetchall=True,
+    ) or []
+
+    if season_summary:
+        top_frag = max(season_summary, key=lambda r: r[1])
+        wr_candidates = [r for r in season_summary if int(r[3] or 0) > 0]
+        top_wr = max(wr_candidates, key=lambda r: float(r[4] or 0)) if wr_candidates else None
+        sc1, sc2 = st.columns(2)
+        sc1.metric("🔥 Season Kill Leader", top_frag[0], f"{int(top_frag[1])} kill")
+        if top_wr:
+            sc2.metric(
+                "⚡ Season Win Rate Leader",
+                top_wr[0],
+                f"{float(top_wr[4]):.1f}%",
+            )
+
+    render_esports_leaderboard(rows, metric, player_id)
+
 
 elif player_page == "📸 Carica Prova":
-    render_proof_upload()
+    st.markdown('<div class="ld-section">CARICA PROVA MATCH</div>', unsafe_allow_html=True)
+
+    st.markdown(
+        f"""
+        <div class="ld-card">
+          <div class="ld-welcome">🎮 {player_id}</div>
+          <div class="ld-muted">
+          La prova verrà associata automaticamente al tuo account.
+          Non puoi caricare statistiche per altri player.
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    with st.form("player_proof_form", clear_on_submit=True, enter_to_submit=False):
+        c1, c2 = st.columns(2)
+        with c1:
+            kills = st.number_input("💀 Kill", min_value=0, step=1, value=0)
+        with c2:
+            placement = st.selectbox(
+                "🏁 Posizionamento team",
+                list(range(1, 17)),
+                format_func=lambda x: f"{x}° · {PLACEMENT_POINTS[x]:.0f}%"
+            )
+        matches = 1
+        wins = 1 if int(placement) == 1 else 0
+        placement_score = calculate_placement_score(placement)
+        st.caption(
+            f"Win Rate match: {placement_score:.0f}% · "
+            f"{'Vittoria' if wins else 'Nessuna vittoria'}"
+        )
+        multiplier = placement_rating_multiplier(placement)
+        preview_base = int(kills) + (int(wins) * 20)
+        preview_rating = round(preview_base * multiplier, 1)
+        st.caption(
+            f"Rating: {preview_base} base × {multiplier:.1f} = {preview_rating:g}"
+        )
+
+        uploaded = st.file_uploader(
+            "🖼️ Screenshot della prova",
+            type=["png", "jpg", "jpeg", "webp"],
+        )
+        st.caption("📦 Dimensione massima immagine: 50 MB.")
+
+        send = st.form_submit_button(
+            "📤 INVIA AL FOUNDER",
+            type="primary",
+            use_container_width=True,
+        )
+
+        if send:
+            if int(placement) < 1 or int(placement) > 16:
+                st.error("Il posizionamento deve essere compreso tra 1 e 16.")
+            elif int(kills) < 0:
+                st.error("Le kill non possono essere negative.")
+            elif uploaded is None:
+                st.error("Carica uno screenshot.")
+            elif getattr(uploaded, "size", 0) > MAX_PLAYER_IMAGE_BYTES:
+                st.error("L'immagine supera il limite massimo di 50 MB.")
+            else:
+                try:
+                    path = save_proof(uploaded, player_id)
+                except Exception as exc:
+                    st.error(f"❌ Impossibile caricare la prova: {exc}")
+                    st.info("La prova non è stata salvata nel database. Puoi correggere il problema e riprovare.")
+                    st.stop()
+                rating = calculate_rating(int(kills), int(wins), int(placement))
+                month = datetime.now().strftime("%Y-%m")
+
+                try:
+                    db_query(
+                        """
+                        INSERT INTO submissions
+                        (activision_id,kills,wins,rating_gained,photo_path,
+                         month_year,status,matches_played,season_id,placement,placement_score)
+                        VALUES (?,?,?,?,?,?,'Pending',?,?,?,?)
+                        """,
+                        (
+                            player_id,
+                            int(kills),
+                            int(wins),
+                            rating,
+                            path,
+                            month,
+                            int(matches),
+                            (lambda season: season[0] if season else None)(active_season_v241()),
+                            int(placement),
+                            float(placement_score),
+                        ),
+                        commit=True,
+                    )
+                except Exception:
+                    delete_storage_url(path)
+                    raise
+
+                notify_founder("proof", "Nuova prova caricata e in attesa di approvazione.", player_id)
+                st.success("✅ Prova caricata, in attesa di approvazione.")
+
+
+# ============================================================
+# PLAYER PROFILE
+# ============================================================
 
 elif player_page == "🔔 Notifiche":
-    render_notifications()
+    st.markdown('<div class="ld-section">NOTIFICHE</div>', unsafe_allow_html=True)
+    render_push_opt_in("player", player_id)
+
+    notes = db_query(
+        """
+        SELECT id, message, is_read, created_at
+        FROM notifications
+        WHERE activision_id=? AND COALESCE(is_archived, FALSE)=FALSE
+        ORDER BY created_at DESC
+        LIMIT 100
+        """,
+        (player_id,), fetchall=True,
+    ) or []
+
+    archived_notes = db_query(
+        """
+        SELECT id, message, is_read, created_at
+        FROM notifications
+        WHERE activision_id=? AND COALESCE(is_archived, FALSE)=TRUE
+        ORDER BY created_at DESC
+        LIMIT 100
+        """,
+        (player_id,), fetchall=True,
+    ) or []
+
+    if not notes:
+        st.info("Nessuna notifica attiva.")
+    else:
+        for nid, message, is_read, created in notes:
+            with st.container(border=True):
+                st.markdown(("✓ " if is_read else "●  ") + html.escape(str(message)))
+                st.caption(str(created)[:16])
+                c1, c2 = st.columns(2)
+                with c1:
+                    if st.button("Apri →", key=f"player_note_open_{nid}", use_container_width=True):
+                        if not is_read:
+                            db_query(
+                                "UPDATE notifications SET is_read=TRUE WHERE id=? AND activision_id=?",
+                                (nid, player_id), commit=True,
+                            )
+                        st.session_state["_player_nav_target"] = "👤 Il mio Profilo"
+                        st.rerun()
+                with c2:
+                    if st.button("🗃️ Archivia", key=f"player_note_archive_{nid}", use_container_width=True):
+                        db_query(
+                            "UPDATE notifications SET is_archived=TRUE, is_read=TRUE WHERE id=? AND activision_id=?",
+                            (nid, player_id), commit=True,
+                        )
+                        st.rerun()
+
+        if st.button("✓ Segna tutte come lette", use_container_width=True):
+            db_query(
+                "UPDATE notifications SET is_read=TRUE WHERE activision_id=? AND COALESCE(is_archived, FALSE)=FALSE",
+                (player_id,), commit=True,
+            )
+            st.rerun()
+
+    with st.expander(f"🗃️ Archivio notifiche ({len(archived_notes)})", expanded=False):
+        if not archived_notes:
+            st.caption("Archivio vuoto.")
+        else:
+            st.caption("Le notifiche archiviate restano qui finché non le elimini definitivamente.")
+            for nid, message, is_read, created in archived_notes:
+                with st.container(border=True):
+                    st.markdown("✓ " + html.escape(str(message)))
+                    st.caption(str(created)[:16])
+                    a1, a2 = st.columns(2)
+                    with a1:
+                        if st.button("↩️ Ripristina", key=f"player_note_restore_{nid}", use_container_width=True):
+                            db_query(
+                                "UPDATE notifications SET is_archived=FALSE WHERE id=? AND activision_id=?",
+                                (nid, player_id), commit=True,
+                            )
+                            st.rerun()
+                    with a2:
+                        if st.button("🗑️ Elimina definitivamente", key=f"player_note_delete_{nid}", use_container_width=True):
+                            db_query(
+                                "DELETE FROM notifications WHERE id=? AND activision_id=?",
+                                (nid, player_id), commit=True,
+                            )
+                            st.rerun()
 
 elif player_page == "🪪 Player Card":
     st.markdown('<div class="ld-section">PLAYER CARD CONDIVISIBILE</div>', unsafe_allow_html=True)
@@ -3538,7 +3451,59 @@ elif player_page == "👤 Il mio Profilo":
         st.caption(f"{player[9] or 'Player'} · {player[2]} · Selezione {player_selection}")
         st.write("Personalizza la tua scheda con una foto profilo e un banner.")
 
-    render_profile_editor()
+    with st.expander("🖼️ Personalizza profilo", expanded=False):
+        avatar_file = st.file_uploader(
+            "Foto profilo",
+            type=["png", "jpg", "jpeg", "webp"],
+            key="profile_avatar_upload",
+        )
+        banner_file = st.file_uploader(
+            "Banner profilo",
+            type=["png", "jpg", "jpeg", "webp"],
+            key="profile_banner_upload",
+        )
+        st.caption(
+            "Le immagini vengono ottimizzate automaticamente in WebP: "
+            "avatar max 512×512, banner max 1600×900. Upload max 15 MB."
+        )
+
+        if st.button("💾 Salva immagini profilo", type="primary", use_container_width=True):
+            if not avatar_file and not banner_file:
+                st.warning("Seleziona almeno una nuova immagine.")
+            else:
+                new_avatar = player[7]
+                new_banner = player[8]
+                uploaded_now = []
+                try:
+                    if avatar_file:
+                        new_avatar = save_profile_media(avatar_file, player_id, "avatar")
+                        uploaded_now.append(new_avatar)
+                    if banner_file:
+                        new_banner = save_profile_media(banner_file, player_id, "banner")
+                        uploaded_now.append(new_banner)
+
+                    db_query(
+                        "UPDATE players SET profile_image_url=?, banner_url=? WHERE activision_id=?",
+                        (new_avatar, new_banner, player_id),
+                        commit=True,
+                    )
+                    uploaded_now.clear()
+
+                    if avatar_file and player[7] and player[7] != new_avatar:
+                        delete_storage_url(player[7])
+                    if banner_file and player[8] and player[8] != new_banner:
+                        delete_storage_url(player[8])
+
+                    st.success("Profilo aggiornato.")
+                    st.rerun()
+                except ValueError as exc:
+                    for orphan in uploaded_now:
+                        delete_storage_url(orphan)
+                    st.error(str(exc))
+                except Exception:
+                    for orphan in uploaded_now:
+                        delete_storage_url(orphan)
+                    st.error("Errore durante il caricamento delle immagini. Riprova.")
 
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Kill", int(kills))
@@ -3557,7 +3522,7 @@ elif player_page == "👤 Il mio Profilo":
         (player_id,),
         fetchall=True,
     ) or []
-    history = list(reversed(history))
+    history.reverse()
 
     approved_history = [r for r in history if r[4] == "Approved"]
 
