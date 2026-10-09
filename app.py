@@ -24,6 +24,11 @@ from PIL import Image, ImageOps, UnidentifiedImageError
 import pandas as pd
 import altair as alt
 import streamlit as st
+# Compatibility for streamlit-cookies-manager 0.2.0, which still uses
+# the removed st.cache decorator. This alias must precede its import.
+# The cookie manager stores an external browser component, not query results.
+if not hasattr(st, "cache"):
+    st.cache = st.cache_resource
 from streamlit_cookies_manager import EncryptedCookieManager
 import streamlit.components.v1 as components
 from access_control import (OWNER_ID, ALL_ROLES, canonical_role, is_staff, is_owner,

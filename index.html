@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="it"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Last Demons · Notifiche</title>
+<link rel="dns-prefetch" href="//last-demons-esports-zs3kcunxuyc4lxlix4olw8.streamlit.app">
+<link rel="preconnect" href="https://last-demons-esports-zs3kcunxuyc4lxlix4olw8.streamlit.app" crossorigin>
+<link rel="manifest" href="/manifest.webmanifest">
+<meta name="theme-color" content="#07080b">
+<meta name="application-name" content="Last Demons">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Last Demons">
+<link rel="apple-touch-icon" href="/icons/icon-192.png">
+<style>
+body{margin:0;background:#07080b;color:#fff;font-family:Arial,sans-serif;display:grid;place-items:center;min-height:100vh}
+.card{width:min(520px,88vw);padding:28px;border:1px solid #8d1720;border-radius:24px;background:#0d0f13;text-align:center}
+h1{letter-spacing:3px} h1 span{color:#f3192d} p{color:#c8cbd2;line-height:1.5}
+button,a{box-sizing:border-box;width:100%;display:block;border:0;border-radius:12px;padding:15px;margin-top:12px;font-weight:800;font-size:16px;text-decoration:none;cursor:pointer}
+button{background:#f71931;color:white} a{background:#292c32;color:white} #status{margin-top:18px}
+.small{font-size:12px;color:#727985;margin-top:22px}
+</style></head><body><main class="card">
+<h1>LAST <span>DEMONS</span></h1>
+<p>Attiva le notifiche Last Demons su questo dispositivo per ricevere aggiornamenti importanti.</p>
+<button id="enable">🔔 ATTIVA NOTIFICHE</button>
+<button id="launch" type="button" style="display:none">🎮 APRI LAST DEMONS</button>
+<a id="back" href="">TORNA ALL'APP</a>
+<button id="install" type="button" style="display:none;background:#292c32">📲 INSTALLA LAST DEMONS</button>
+<div id="status"></div><div class="small">Dopo la conferma tornerai automaticamente all'app.</div>
+</main>
+<script src="https://www.gstatic.com/firebasejs/11.0.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/11.0.2/firebase-messaging-compat.js"></script>
+<script>
+firebase.initializeApp({
+  apiKey: "AIzaSyDKe8SyAjMfDY9UavENY5ywcVyK_JZetWE",
+  authDomain: "last-demons.firebaseapp.com",
+  projectId: "last-demons",
+  storageBucket: "last-demons.firebasestorage.app",
+  messagingSenderId: "36761061003",
+  appId: "1:36761061003:web:dec18c5ee7757beb1e768e"
+});
+
+const messaging = firebase.messaging();
+messaging.onMessage(async (payload) => {
+  const data = payload.data || {};
+  if (!["founder", "player"].includes(data.identity_type) || Notification.permission !== "granted") return;
+  const registration = await navigator.serviceWorker.getRegistration("/");
+  if (registration) await registration.showNotification(data.title || "Last Demons", {
+    body: data.body || "", icon: "/icons/icon-192.png", badge: "/icons/icon-192.png",
+    data: {identity_type: data.identity_type}
+  });
+});
+const hash = new URLSearchParams(location.hash.slice(1));
+const assertion = hash.get("a") || "";
+let returnUrl = hash.get("r") || "";
+
+try {
+  const u = new URL(returnUrl);
+  if (u.protocol !== "https:" || !u.hostname.endsWith(".streamlit.app") || u.hostname === "share.streamlit.io") {
+    throw new Error("bad return");
+  }
+} catch (_) {
+  returnUrl = "";
+}
+
+const back = document.getElementById("back");
+const status = document.getElementById("status");
+const enable = document.getElementById("enable");
+const launch = document.getElementById("launch");
+
+// Public app destination used by the installed Firebase PWA launcher.
+// When this page is reached from Streamlit for push activation, the signed return URL still wins.
+const APP_URL = "https://last-demons-esports-zs3kcunxuyc4lxlix4olw8.streamlit.app/";
+if (returnUrl) {
+  // Push return is handled directly; do not persist it as the Player launcher target.
+}
+
+if (!assertion) {
+  enable.style.display = "none";
+  launch.style.display = "block";
+  document.getElementById("install").style.display = "block";
+  document.querySelector("main p").textContent =
+    "Last Demons Esports. Installa l’app sul dispositivo oppure apri il portale.";
+  document.querySelector(".small").textContent =
+    "Dopo l’installazione troverai Last Demons nella schermata Home.";
+}
+
+launch.addEventListener("click", () => {
+  // Always open the canonical public Player app. This intentionally ignores
+  // stale URLs cached by older installed versions of the PWA.
+  window.location.href = APP_URL;
+});
+
+if (returnUrl) {
+  back.href = returnUrl;
+} else {
+  back.style.display = "none";
+}
+
+enable.addEventListener("click", async () => {
+  enable.disabled = true;
+  status.textContent = "⏳ Attivazione notifiche…";
+
+  try {
+    if (!assertion) throw new Error("Link di attivazione scaduto o non valido.");
+    if (!("Notification" in window)) throw new Error("Questo browser non supporta le notifiche web.");
+    if (!("serviceWorker" in navigator)) throw new Error("Questo browser non supporta il servizio notifiche.");
+
+    const permission = await Notification.requestPermission();
+    if (permission !== "granted") throw new Error("Permesso notifiche non concesso.");
+
+    const registration = await navigator.serviceWorker.register("/firebase-messaging-sw.js", { scope: "/" });
+    await registration.update();
+
+    const token = await messaging.getToken({
+      vapidKey: "BP57184jsi7pZ6CatNnkwLqxLDYpAkSilBVnIFl7GwGKl0-QAZYiGVQ_2N5-vD4hCJaFlhuHd6Tcbo0v7b0aCJs",
+      serviceWorkerRegistration: registration
+    });
+    if (!token) throw new Error("Token notifiche non disponibile.");
+
+    const response = await fetch(
+      "https://eroqddxxlfjdopxyftml.supabase.co/functions/v1/register-push",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          assertion,
+          fcm_token: token,
+          user_agent: navigator.userAgent
+        })
+      }
+    );
+
+    if (!response.ok) {
+      let detail = "";
+      try { detail = (await response.text()).slice(0, 180); } catch (_) {}
+      throw new Error(`Registrazione server non riuscita (${response.status})${detail ? ": " + detail : "."}`);
+    }
+
+    history.replaceState(null, "", location.pathname);
+    status.textContent = "✅ Notifiche attivate per questa area e questo account. Le precedenti associazioni di questo browser sono state disattivate.";
+
+    if (returnUrl) {
+      status.textContent += " Ritorno all'app…";
+      setTimeout(() => location.replace(returnUrl), 1200);
+    } else {
+      status.textContent += " Puoi chiudere questa scheda e tornare all'app.";
+    }
+  } catch (e) {
+    status.textContent = "⚠️ " + (e?.message || "Errore durante l'attivazione.");
+    enable.disabled = false;
+  }
+});
+
+let deferredInstallPrompt = null;
+const installButton = document.getElementById("install");
+window.addEventListener("beforeinstallprompt", (event) => {
+  event.preventDefault();
+  deferredInstallPrompt = event;
+  installButton.style.display = "block";
+});
+installButton.addEventListener("click", async () => {
+  if (!deferredInstallPrompt) {
+    status.textContent = "Per installare Last Demons usa il menu del browser e scegli “Aggiungi a schermata Home” o “Installa app”.";
+    return;
+  }
+  deferredInstallPrompt.prompt();
+  await deferredInstallPrompt.userChoice;
+  deferredInstallPrompt = null;
+  installButton.style.display = "none";
+});
+window.addEventListener("appinstalled", () => {
+  status.textContent = "✅ Last Demons installata sul dispositivo.";
+  installButton.style.display = "none";
+});
+
+</script></body></html>
