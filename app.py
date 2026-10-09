@@ -695,6 +695,81 @@ letter-spacing:.10em;text-transform:uppercase;line-height:1.2}
     width:1.55rem!important;
   }
 }
+
+/* LD semantic actions: green = submit/save/approve, red = destructive/reject. */
+.stButton > button[kind="primary"],
+.stFormSubmitButton > button[kind="primary"] {
+    background: linear-gradient(95deg,#116b38,#19954c)!important;
+    border:1px solid #238b50!important;color:#fff!important;
+}
+.stButton > button[kind="primary"]:hover,
+.stFormSubmitButton > button[kind="primary"]:hover {
+    background:linear-gradient(95deg,#178848,#22a65a)!important;
+    border-color:#37c773!important;
+}
+/* Streamlit exposes button keys as st-key-* wrappers. */
+[class*="st-key-reject_"] button,
+[class*="st-key-rej_"] button,
+[class*="st-key-founder_delete_"] button,
+[class*="st-key-delete_archived_"] button,
+[class*="st-key-player_note_delete_"] button,
+[class*="st-key-ld_delete_"] button,
+[class*="st-key-ld_void_"] button,
+[class*="st-key-ld_clear_"] button,
+[class*="st-key-ld_reset_"] button,
+[class*="st-key-ld_remove_"] button,
+[class*="st-key-ld_deny_"] button,
+[class*="st-key-ld_archive_"] button,
+[class*="st-key-ld_reject_"] button,
+[class*="st-key-ld_delete"] button,
+[class*="st-key-ld_void"] button,
+[class*="st-key-ld_clear"] button,
+[class*="st-key-ld_reset"] button,
+[class*="st-key-ld_remove"] button,
+[class*="st-key-ld_deny"] button,
+[class*="st-key-ld_reject"] button,
+[class*="st-key-ld_delete"] button,
+[class*="st-key-ld_action_red"] button {
+    background:linear-gradient(95deg,#8e1421,#c32335)!important;
+    border:1px solid #d33947!important;color:white!important;
+}
+/* Destructive forms have stable identifiers in Streamlit's form DOM. */
+[data-testid="stForm"]:has([data-testid="stTextInput"] input[placeholder="AZZERA"]) button[kind="primary"] {
+    background:linear-gradient(95deg,#8e1421,#c32335)!important;
+}
+/* Shared hierarchy for all Founder and Player widget labels. */
+[data-testid="stWidgetLabel"] p,
+[data-testid="stWidgetLabel"] label,
+[data-testid="stTextInput"] label p,
+[data-testid="stTextArea"] label p,
+[data-testid="stSelectbox"] label p,
+[data-testid="stNumberInput"] label p,
+[data-testid="stDateInput"] label p,
+[data-testid="stFileUploader"] label p,
+[data-testid="stRadio"] > label p,
+[data-testid="stCheckbox"] label p {
+    color:#f2f0f2!important;font-weight:750!important;
+    font-size:.94rem!important;letter-spacing:.025em!important;
+    line-height:1.45!important;
+}
+[data-testid="stMainBlockContainer"] [data-testid="stWidgetLabel"] {
+    margin-bottom:5px!important;
+}
+[data-testid="stMainBlockContainer"] [data-testid="stMarkdownContainer"] > p > strong:first-child {
+    color:#ff7580;font-weight:850;letter-spacing:.035em;
+}
+[data-testid="stMainBlockContainer"] [data-testid="stMarkdownContainer"] > p {
+    line-height:1.55;
+}
+@media(max-width:760px){
+  [data-testid="stWidgetLabel"] p {font-size:.92rem!important;}
+}
+.ld-detail-field{display:flex;flex-wrap:wrap;align-items:center;gap:8px 14px;
+    padding:12px 14px;margin:8px 0;border-left:3px solid #b82434;
+    background:rgba(135,21,34,.11);border-radius:7px;}
+.ld-detail-label{font-size:.85rem;font-weight:900;letter-spacing:.075em;
+    color:#ff6975;min-width:88px;}
+.ld-detail-value{font-size:1.04rem;font-weight:700;color:#f6f5f7;overflow-wrap:anywhere;}
 </style>
     """,
     unsafe_allow_html=True,
@@ -1954,7 +2029,7 @@ def render_role_editor(target_id):
     new_role = st.selectbox("Ruolo", options,
         index=options.index(current) if current in options else 0,
         key=f"org_role_{target_id}_{','.join(options)}")
-    if st.button("💾 Salva ruolo", use_container_width=True):
+    if st.button("💾 Salva ruolo", type="primary", use_container_width=True):
         set_org_role(target_id, new_role)
         notify_player(target_id, f"🛡️ Il tuo ruolo nell'organizzazione è ora: {new_role}.")
         st.success("Ruolo aggiornato.")
@@ -2803,7 +2878,7 @@ if founder_page:
                     if current_selection_label in selection_options else 2,
                 )
                 new_selection = "Academy" if new_selection_label == "LD Player" else new_selection_label
-                if st.button("💾 Salva selezione", use_container_width=True):
+                if st.button("💾 Salva selezione", type="primary", use_container_width=True):
                     staff_query(
                         "UPDATE players SET selection=? WHERE activision_id=?",
                         (new_selection, chosen),
@@ -2818,7 +2893,7 @@ if founder_page:
                     type="password",
                     help="Utile anche per account creati con la V1.",
                 )
-                if st.button("🔐 Salva nuova password", use_container_width=True,
+                if st.button("🔐 Salva nuova password", type="primary", use_container_width=True,
                              disabled=not can_control_account(player, get_player(chosen, fresh=True))):
                     if len(new_password) < 8:
                         st.error("Minimo 8 caratteri.")
@@ -2931,8 +3006,13 @@ if founder_page:
                     key=f"void_season_player_{current[0]}",
                 )
                 preview = candidate_map[target_id]
-                st.write(f"**Stagione:** {current[1]}")
-                st.write(f"**Player:** {target_id}")
+                st.markdown(
+                    f'<div class="ld-detail-field"><span class="ld-detail-label">STAGIONE</span>'
+                    f'<span class="ld-detail-value">{html.escape(str(current[1]))}</span></div>'
+                    f'<div class="ld-detail-field"><span class="ld-detail-label">PLAYER</span>'
+                    f'<span class="ld-detail-value">{html.escape(str(target_id))}</span></div>',
+                    unsafe_allow_html=True,
+                )
                 st.caption(
                     f"{preview[1]} prove approvate · {preview[2]} in attesa · "
                     f"{preview[3]} kill · {preview[4]} vittorie · {float(preview[5]):.1f} Rating"
@@ -2947,7 +3027,7 @@ if founder_page:
                         "Confermo di voler annullare tutti i risultati e rifiutare le prove in attesa "
                         "di questo player nella stagione corrente"
                     )
-                    void_btn = st.form_submit_button("🛡️ ANNULLA RISULTATI DEL PLAYER", use_container_width=True)
+                    void_btn = st.form_submit_button("🛡️ ANNULLA RISULTATI DEL PLAYER", key="ld_void_player", use_container_width=True)
                     if void_btn:
                         if not confirm_void or typed_id.strip() != target_id:
                             st.error("Spunta la conferma e riscrivi esattamente l'Activision ID selezionato.")
@@ -2978,7 +3058,7 @@ if founder_page:
             confirm_text = st.text_input("Scrivi AZZERA per confermare", placeholder="AZZERA")
             new_season_btn = st.form_submit_button(
                 "🔄 AZZERA STAGIONE E AVVIA NUOVA",
-                type="primary",
+                key="ld_reset_season", type="primary",
                 use_container_width=True,
             )
             if new_season_btn:
@@ -3016,7 +3096,7 @@ if founder_page:
                 )
                 clear_btn = st.form_submit_button(
                     "🧹 AZZERA RISULTATI STAGIONE CORRENTE",
-                    use_container_width=True,
+                    key="ld_clear_season", use_container_width=True,
                 )
                 if clear_btn:
                     if not clear_check or clear_text.strip().upper() != "AZZERA RISULTATI":
@@ -3060,7 +3140,7 @@ if founder_page:
                 )
                 delete_btn = st.form_submit_button(
                     "🗑️ ELIMINA STAGIONE PASSATA",
-                    use_container_width=True,
+                    key="ld_delete_season", use_container_width=True,
                 )
                 if delete_btn:
                     sid, sname = past_map[selected_past]
