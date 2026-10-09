@@ -2874,7 +2874,8 @@ if founder_page:
                 st.rerun()
 
     elif founder_page == "🗓️ Stagioni":
-        st.markdown('<div class="ld-section">GESTIONE STAGIONI</div>', unsafe_allow_html=True)
+        st.markdown('<div class="ld-section">🗓️ GESTIONE STAGIONI</div>', unsafe_allow_html=True)
+        st.caption("Panoramica, regole e operazioni sulle stagioni. Le azioni irreversibili richiedono conferma.")
         flash = st.session_state.pop("_season_action_success", None)
         if flash:
             st.success(flash)
@@ -2885,19 +2886,20 @@ if founder_page:
             "SELECT id, name, started_at, ended_at, is_active FROM seasons ORDER BY id DESC",
             fetchall=True,
         ) or []
-        st.dataframe(
-            pd.DataFrame(seasons, columns=["ID", "Nome", "Inizio", "Fine", "Attiva"]),
-            hide_index=True,
-            use_container_width=True,
-        )
+        st.markdown("### 📋 Riepilogo stagioni")
+        season_df = pd.DataFrame(seasons, columns=["ID", "Nome", "Inizio", "Fine", "Attiva"])
+        if not season_df.empty:
+            season_df["Stato"] = season_df["Attiva"].map(lambda active: "🟢 Attiva" if active else "⚫ Conclusa")
+            season_df = season_df.drop(columns=["Attiva"])
+        st.dataframe(season_df, hide_index=True, use_container_width=True)
 
         if current:
             st.markdown("### 🏆 Regole classifiche")
             st.caption("Top Fragger, Win Rate e Rating: blocchi cumulativi fissi di 5 game "
                        "approvati per player. I game intermedi sono provvisori.")
-            st.warning(FAIR_PLAY_NOTICE)
-
+            st.markdown("---")
             st.markdown("### 🛡️ Annulla risultati di un player")
+            st.caption("Operazione amministrativa: modifica le prove della stagione corrente, non il profilo del player.")
             candidates = staff_query(
                 """SELECT p.activision_id,
                     COUNT(*) FILTER (WHERE s.status='Approved'),
@@ -2958,6 +2960,8 @@ if founder_page:
                                 )
                                 st.rerun()
 
+        st.markdown("---")
+        st.markdown("### 🔄 Avvia una nuova stagione")
         st.warning(
             "⚠️ AZZERA STAGIONE chiude la stagione corrente e avvia una nuova stagione con "
             "Top Fragger, Win Rate, Rating, kill, win e match tutti a 0. "
@@ -2992,6 +2996,7 @@ if founder_page:
                     st.rerun()
 
 
+        st.markdown("---")
         st.markdown("### 🧹 Gestione stagione corrente")
         st.caption(
             "Azzera risultati elimina soltanto le prove/risultati della stagione attiva. "
@@ -3025,6 +3030,7 @@ if founder_page:
                         st.rerun()
 
         past_seasons = [s for s in seasons if not s[4]]
+        st.markdown("---")
         st.markdown("### 🗑️ Elimina stagioni passate")
         st.caption(
             "L'eliminazione è definitiva: rimuove la stagione selezionata e tutte le prove "
