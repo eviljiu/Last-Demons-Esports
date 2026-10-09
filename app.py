@@ -731,7 +731,7 @@ def hero():
 @st.cache_resource(show_spinner=False)
 def db_pool():
     return pg_pool.ThreadedConnectionPool(
-        minconn=2, maxconn=20, dsn=DATABASE_URL, sslmode="require",
+        minconn=1, maxconn=20, dsn=DATABASE_URL, sslmode="require",
         connect_timeout=8, application_name="last_demons_streamlit",
         options="-c statement_timeout=8000 -c idle_in_transaction_session_timeout=10000",
     )
@@ -1021,7 +1021,7 @@ def _query_version_key(query: str):
     versions = _cache_versions()
     return tuple((table, versions[table]) for table in _query_tables(query))
 
-@st.cache_data(ttl=20, max_entries=384, show_spinner=False)
+@st.cache_data(ttl=30, max_entries=384, show_spinner=False)
 def _db_read_cached(query: str, params_tuple: tuple, version_key: tuple):
     conn = get_conn()
     try:
@@ -1034,7 +1034,7 @@ def _db_read_cached(query: str, params_tuple: tuple, version_key: tuple):
 
 def _session_read_cache():
     now = time.monotonic()
-    if now - st.session_state.get("_ld_hot_reads_at", 0.0) > 10:
+    if now - st.session_state.get("_ld_hot_reads_at", 0.0) > 15:
         st.session_state["_ld_hot_reads"] = {}
         st.session_state["_ld_hot_reads_at"] = now
     hot = st.session_state.setdefault("_ld_hot_reads", {})
@@ -1059,7 +1059,7 @@ def db_query(query, params=(), fetchall=False, commit=False):
     normalized = query.lstrip().upper()
     is_select = normalized.startswith("SELECT") and not commit
 
-    if is_select and "password_hash" not in query.lower():
+    if is_select and "password_hash" not in query.lower() and "push_subscriptions" not in query.lower():
         version_key = _query_version_key(query)
         key = (query, params, version_key)
         hot = _session_read_cache()
@@ -1775,7 +1775,7 @@ def official_ranking_rows(season_id, selection, include_incomplete=False):
             ) AS game_number,
             COUNT(*) OVER (PARTITION BY s.activision_id) AS total_games
             FROM submissions s
-            WHERE s.status='Approved' AND s.season_id=?
+            WHERE s.status='Approved' AND s.season_voided_at IS NULL AND s.season_id=?
         )
         SELECT p.activision_id, p.selection, p.profile_image_url,
                COALESCE(SUM(s.kills),0), COALESCE(SUM(s.wins),0),
@@ -1806,9 +1806,9 @@ def theoretical_player_snapshot(player_id):
     selection = player_row[0][0]
     rows = official_ranking_rows(season[0], selection, include_incomplete=True)
     snapshot = [
-        {"activision_id": r[0], "kills": int(r[1] or 0), "wins": int(r[2] or 0),
-         "matches": int(r[3] or 0), "rating": float(r[4] or 0),
-         "win_rate": float(r[5] or 0)}
+        {"activision_id": r[0], "kills": int(r[3] or 0), "wins": int(r[4] or 0),
+         "matches": int(r[5] or 0), "rating": float(r[6] or 0),
+         "win_rate": float(r[7] or 0)}
         for r in rows
     ]
     mine = next((r for r in snapshot if r["activision_id"] == player_id), None)
@@ -2023,12 +2023,12 @@ if not st.session_state.player_logged_in:
 
 
     # A known, approved account must not be sent back to the registration form.
-    known_id = str(st.session_state.get("recognized_device_id") or st.session_state.get("checked_candidate") or "").strip()
+    known_id = str(st.session_state.get("checked_candidate") or "").strip()
     known_approved = False
     if known_id:
-        known_candidate = get_player(known_id, fresh=True)
+        known_candidate = get_player(known_id, fresh=False)
         known_approved = bool(known_candidate and known_candidate[4] == "Approved")
-    portal_options = ["🎮 ACCEDI"] if known_approved else ["🔥 REGISTRATI", "🎮 ACCEDI"]
+    portal_options = ["🎮 ACCEDI"] if known_approved else ["🎮 ACCEDI", "🔥 REGISTRATI"]
     portal_mode = st.radio(
         "PORTALE", portal_options,
         horizontal=True,
@@ -2095,7 +2095,6 @@ if not st.session_state.player_logged_in:
                 login_password=st.text_input("Password",type="password")
                 login_btn=st.form_submit_button("🎮 ACCEDI AL COMMAND CENTER",type="primary",use_container_width=True)
                 if login_btn:
-                    clear_read_caches()
                     candidate=get_player(login_id.strip(), fresh=True)
                     if not candidate: st.error("Activision ID non registrato.")
                     elif candidate[4]=="Pending": st.warning("⏳ Candidatura ancora in attesa.")
@@ -2117,11 +2116,13 @@ if not st.session_state.player_logged_in:
             <div class="ld-muted"><b>01</b> · Primo accesso: registrati.<br><br>
             <b>02</b> · Attendi l'approvazione.<br><br>
             <b>03</b> · Dopo l’approvazione: accedi con le tue credenziali.</div></div>""",unsafe_allow_html=True)
-        st.markdown("### 👥 Roster ufficiale")
-        roster=db_query("""SELECT activision_id,selection,org_role,profile_image_url
+        show_public_roster = st.toggle("👥 Mostra roster ufficiale", value=False, key="public_roster_toggle")
+        if show_public_roster:
+            st.markdown("### 👥 Roster ufficiale")
+        roster=(db_query("""SELECT activision_id,selection,org_role,profile_image_url
             FROM players WHERE status='Approved'
-            ORDER BY selection,LOWER(activision_id) LIMIT 12""",fetchall=True) or []
-        if not roster: st.caption("Il roster apparirà qui dopo le prime approvazioni.")
+            ORDER BY selection,LOWER(activision_id) LIMIT 12""",fetchall=True) or []) if show_public_roster else []
+        if show_public_roster and not roster: st.caption("Il roster apparirà qui dopo le prime approvazioni.")
         else:
             for act,sel,role,avatar in roster:
                 with st.container(border=True):
@@ -2355,19 +2356,24 @@ if founder_page:
         st.markdown("### 🏆 TOP 5 ORGANIZZAZIONE")
         perf = staff_query(
             """
-            SELECT p.activision_id,
-                   COALESCE(SUM(s.kills),0),
-                   COALESCE(SUM(s.wins),0),
-                   COALESCE(SUM(s.matches_played),0),
-                   COALESCE(SUM(s.rating_gained),0),
-                   COALESCE(AVG(COALESCE(s.placement_score,
-                       CASE WHEN s.matches_played > 0 THEN s.wins * 100.0 / s.matches_played ELSE 0 END)),0)
-            FROM players p
-            LEFT JOIN submissions s ON s.activision_id=p.activision_id AND s.status='Approved'
-                AND s.season_id=(SELECT id FROM seasons WHERE is_active=TRUE ORDER BY id DESC LIMIT 1)
+            WITH numbered AS (
+                SELECT s.*, ROW_NUMBER() OVER (
+                    PARTITION BY s.activision_id ORDER BY s.timestamp, s.id
+                ) AS game_number,
+                COUNT(*) OVER (PARTITION BY s.activision_id) AS total_games
+                FROM submissions s
+                WHERE s.status='Approved' AND s.season_voided_at IS NULL
+                  AND s.season_id=(SELECT id FROM seasons WHERE is_active=TRUE ORDER BY id DESC LIMIT 1)
+            )
+            SELECT p.activision_id, SUM(s.kills), SUM(s.wins),
+                   SUM(s.matches_played), SUM(s.rating_gained),
+                   AVG(COALESCE(s.placement_score,
+                       CASE WHEN s.matches_played > 0 THEN s.wins * 100.0 / s.matches_played ELSE 0 END))
+            FROM players p JOIN numbered s ON s.activision_id=p.activision_id
             WHERE p.status='Approved'
+              AND s.game_number <= FLOOR(s.total_games / 5.0) * 5
             GROUP BY p.activision_id
-            ORDER BY COALESCE(SUM(s.rating_gained),0) DESC
+            ORDER BY SUM(s.rating_gained) DESC, p.activision_id
             LIMIT 5
             """,
             fetchall=True,
