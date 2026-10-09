@@ -110,12 +110,6 @@ except KeyError as exc:
     )
     st.stop()
 
-# Persistent Player login (15 days)
-# AUTH_SECRET is optional: if absent, FOUNDER_PASSWORD is used as signing secret.
-AUTH_SECRET = str(st.secrets.get("AUTH_SECRET", FOUNDER_PASSWORD)).strip()
-if not AUTH_SECRET:
-    st.error("Configura AUTH_SECRET nei Secrets di Streamlit.")
-    st.stop()
 # Push secrets are optional until the Supabase Edge Functions are deployed.
 PUSH_REGISTRATION_SECRET = str(st.secrets.get("PUSH_REGISTRATION_SECRET", "")).strip()
 PUSH_SEND_SECRET = str(st.secrets.get("PUSH_SEND_SECRET", "")).strip()
@@ -151,8 +145,6 @@ def _current_public_app_url() -> str:
     return ""
 
 
-REMEMBER_DAYS = 15
-REMEMBER_COOKIE = "ld_player_device"
 
 def validate_storage_config():
     missing = []
@@ -164,7 +156,6 @@ def validate_storage_config():
         missing.append("SUPABASE_BUCKET")
     return missing
 
-FOUNDER_REMEMBER_COOKIE = "ld_founder_device"
 
 # Optimized logos embedded directly: no GitHub path/static routing dependency.
 # Main ~145 KB, sidebar ~23 KB.
@@ -1157,105 +1148,10 @@ def normalize_rating_formula():
 # ============================================================
 
 
-def _token_b64e(data: bytes) -> str:
-    return base64.urlsafe_b64encode(data).decode("ascii").rstrip("=")
-
-
-def _token_b64d(value: str) -> bytes:
-    return base64.urlsafe_b64decode((value + "=" * (-len(value) % 4)).encode("ascii"))
-
-
-def make_remember_token(activision_id: str) -> str:
-    candidate = get_player(activision_id, fresh=True)
-    if not candidate or candidate[4] != "Approved":
-        raise PermissionError("Account non abilitato")
-    payload = json.dumps({
-        "sub": activision_id,
-        "exp": int(time.time()) + REMEMBER_DAYS * 86400,
-        "v": 3,
-        "auth": auth_stamp(candidate),
-    }, separators=(",", ":")).encode("utf-8")
-    body = _token_b64e(payload)
-    signature = hmac.new(
-        AUTH_SECRET.encode("utf-8"), body.encode("ascii"), hashlib.sha256
-    ).digest()
-    return body + "." + _token_b64e(signature)
-
-
-def verify_remember_token(token: str):
-    try:
-        body, signature = token.split(".", 1)
-        expected = hmac.new(
-            AUTH_SECRET.encode("utf-8"), body.encode("ascii"), hashlib.sha256
-        ).digest()
-        if not hmac.compare_digest(_token_b64d(signature), expected):
-            return None
-        payload = json.loads(_token_b64d(body).decode("utf-8"))
-        if int(payload.get("exp", 0)) < int(time.time()):
-            return None
-        candidate = get_player(str(payload.get("sub", "")), fresh=True)
-        if payload.get("v") != 3 or not session_matches(candidate, payload.get("sub"), payload.get("auth")):
-            return None
-        return candidate[1]
-    except Exception:
-        return None
-
-
-def _device_storage():
-    # Components must not be cached globally across users/sessions.
-    # The component itself manages its frontend lifecycle.
-    from streamlit_local_storage import LocalStorage
-    return LocalStorage()
-
-
-def _safe_device_storage(operation: str, token: str = "", key: str = ""):
-    """Fail closed on storage errors, without taking the whole app offline."""
-    try:
-        storage = _device_storage()
-        if operation == "read":
-            value = storage.getItem(REMEMBER_COOKIE, key=key)
-            return value if isinstance(value, str) and value else None
-        if operation == "write":
-            storage.setItem(REMEMBER_COOKIE, token, key=key)
-        elif operation == "delete":
-            storage.deleteItem(REMEMBER_COOKIE, key=key)
-    except (TypeError, ValueError, AttributeError, RuntimeError, ImportError) as exc:
-        # No token, password or secret should ever be printed in logs.
-        print(f"LD device storage {operation} unavailable: {type(exc).__name__}")
-    return None
-
-
-def remember_device_script(token: str):
-    st.session_state.pop("invalid_device_token", None)
-    _safe_device_storage("write", token=token, key="ld_store_device")
-
-
 def forget_device_script():
+    """Clear transient account hints without writing persistent browser tokens."""
     st.session_state.pop("recognized_device_id", None)
     st.session_state.pop("checked_candidate", None)
-    st.session_state.pop("invalid_device_token", None)
-    _safe_device_storage("delete", key="ld_delete_device")
-
-
-def try_restore_player_session():
-    if st.session_state.get("player_logged_in"):
-        return
-    # On the first render the component can legitimately return None.
-    token = _safe_device_storage("read", key="ld_read_device")
-    if not token or st.session_state.get("invalid_device_token") == token:
-        return
-    player_id = verify_remember_token(token)
-    if player_id:
-        candidate = get_player(player_id, fresh=True)
-        if candidate and candidate[4] == "Approved":
-            st.session_state["recognized_device_id"] = candidate[1]
-            st.session_state["checked_candidate"] = candidate[1]
-            st.session_state.player_logged_in = True
-            st.session_state.player_id = candidate[1]
-            st.session_state["auth_stamp"] = auth_stamp(candidate)
-            return
-    st.session_state["invalid_device_token"] = token
-    _safe_device_storage("delete", key="ld_expired_device")
 
 
 def hash_password(password: str) -> str:
@@ -1869,6 +1765,33 @@ def win_rate_eligible(matches, minimum):
     return int(matches or 0) >= int(minimum)
 
 
+def official_ranking_rows(season_id, selection, include_incomplete=False):
+    """One approved submission equals one game. Official totals use completed 5-game blocks."""
+    return db_query(
+        """
+        WITH numbered AS (
+            SELECT s.*, ROW_NUMBER() OVER (
+                PARTITION BY s.activision_id ORDER BY s.timestamp, s.id
+            ) AS game_number,
+            COUNT(*) OVER (PARTITION BY s.activision_id) AS total_games
+            FROM submissions s
+            WHERE s.status='Approved' AND s.season_id=?
+        )
+        SELECT p.activision_id, p.selection, p.profile_image_url,
+               COALESCE(SUM(s.kills),0), COALESCE(SUM(s.wins),0),
+               COALESCE(SUM(s.matches_played),0), COALESCE(SUM(s.rating_gained),0),
+               COALESCE(AVG(COALESCE(s.placement_score,
+                   CASE WHEN s.matches_played > 0
+                   THEN s.wins * 100.0 / s.matches_played ELSE 0 END)),0)
+        FROM players p JOIN numbered s ON s.activision_id=p.activision_id
+        WHERE p.status='Approved' AND p.selection=?
+          AND (? OR s.game_number <= FLOOR(s.total_games / 5.0) * 5)
+        GROUP BY p.activision_id, p.selection, p.profile_image_url
+        """,
+        (season_id, selection, include_incomplete), fetchall=True,
+    ) or []
+
+
 def theoretical_player_snapshot(player_id):
     """Return the player's current-season hypothetical standings before the threshold."""
     season = active_season_v241()
@@ -1881,26 +1804,7 @@ def theoretical_player_snapshot(player_id):
     if not player_row:
         return None
     selection = player_row[0][0]
-    rows = db_query(
-        """
-        SELECT p.activision_id,
-               COALESCE(SUM(s.kills),0) AS kills,
-               COALESCE(SUM(s.wins),0) AS wins,
-               COALESCE(SUM(s.matches_played),0) AS matches,
-               COALESCE(SUM(s.rating_gained),0) AS rating,
-               COALESCE(AVG(COALESCE(s.placement_score,
-                   CASE WHEN s.matches_played > 0
-                        THEN s.wins * 100.0 / s.matches_played ELSE 0 END)),0) AS win_rate
-        FROM players p
-        LEFT JOIN submissions s
-          ON s.activision_id=p.activision_id
-         AND s.season_id=? AND s.status='Approved'
-        WHERE p.status='Approved' AND p.selection=?
-        GROUP BY p.activision_id
-        HAVING COUNT(s.id) > 0
-        """,
-        (season[0], selection), fetchall=True,
-    ) or []
+    rows = official_ranking_rows(season[0], selection, include_incomplete=True)
     snapshot = [
         {"activision_id": r[0], "kills": int(r[1] or 0), "wins": int(r[2] or 0),
          "matches": int(r[3] or 0), "rating": float(r[4] or 0),
@@ -1909,10 +1813,10 @@ def theoretical_player_snapshot(player_id):
     ]
     mine = next((r for r in snapshot if r["activision_id"] == player_id), None)
     if not mine:
-        return {"season": season, "selection": selection, "player": None, "threshold": int(season[3])}
+        return {"season": season, "selection": selection, "player": None, "threshold": 5}
 
     def rank(metric):
-        eligible_snapshot = [r for r in snapshot if r["matches"] >= max(1, int(season[3])) or r["activision_id"] == player_id]
+        eligible_snapshot = [r for r in snapshot if r["matches"] >= 5 or r["activision_id"] == player_id]
         ordered = sorted(eligible_snapshot, key=lambda r: (r[metric], r["rating"], r["activision_id"]), reverse=True)
         return next((i + 1 for i, r in enumerate(ordered) if r["activision_id"] == player_id), None)
 
@@ -1920,7 +1824,7 @@ def theoretical_player_snapshot(player_id):
         "season": season,
         "selection": selection,
         "player": mine,
-        "threshold": int(season[3]),
+        "threshold": 5,
         "top_fragger_rank": rank("kills"),
         "win_rate_rank": rank("win_rate"),
         "rating_rank": rank("rating"),
@@ -1936,24 +1840,22 @@ def render_theoretical_player_card(player_id):
     t = theoretical["player"]
     played = int(t["matches"])
     threshold = max(1, int(theoretical["threshold"]))
-    # Once qualified, do not keep presenting an official score as hypothetical.
-    if played >= threshold:
-        st.caption(f"✅ Qualificazione completata: {played} partite approvate nella stagione.")
-        return
-    remaining = threshold - played
+    completed = (played // 5) * 5
+    next_block = completed + 5
+    remaining = next_block - played
     st.markdown("### 📊 RATING E POSIZIONE PROVVISORI")
     st.caption(
         f"Stagione {theoretical['season'][1]} · {theoretical['selection']} · "
-        f"{played}/{threshold} game confermati. "
+        f"{played} game confermati · prossimo blocco a {next_block}. "
         "Il calcolo viene aggiornato dopo ogni approvazione."
     )
-    st.progress(min(played / threshold, 1.0), text=f"Qualificazione Rating · {played}/{threshold}")
+    st.progress((played % 5) / 5, text=f"Progresso prossimo blocco · {played % 5}/5")
     tc1, tc2, tc3 = st.columns(3)
     tc1.metric("🔥 Rating teorico", f"{t['rating']:.1f}")
     tc2.metric("📈 Posizione Rating teorica", f"#{theoretical['rating_rank']}")
     tc3.metric("🏆 Win Rate teorico", f"{t['win_rate']:.1f}%", f"#{theoretical['win_rate_rank']}")
     st.info(
-        f"Mancano {remaining} game approvati per completare la qualificazione. "
+        f"Mancano {remaining} game approvati al prossimo aggiornamento ufficiale. "
         "Il posizionamento è una simulazione rispetto ai risultati confermati "
         "degli altri player, non una posizione ufficiale."
     )
@@ -2109,7 +2011,7 @@ if _public_profile_id:
         public_player_card(_public_profile_id)
     st.stop()
 
-try_restore_player_session()
+
 
 if not st.session_state.player_logged_in:
     hero()
@@ -2191,11 +2093,6 @@ if not st.session_state.player_logged_in:
                     value=st.session_state.get("checked_candidate",""),
                     placeholder="DemonKing#1234567")
                 login_password=st.text_input("Password",type="password")
-                remember_device = st.checkbox(
-                    "Ricorda questo dispositivo per 15 giorni",
-                    value=True,
-                    help="La password non viene salvata sul dispositivo.",
-                )
                 login_btn=st.form_submit_button("🎮 ACCEDI AL COMMAND CENTER",type="primary",use_container_width=True)
                 if login_btn:
                     clear_read_caches()
@@ -2209,13 +2106,9 @@ if not st.session_state.player_logged_in:
                         st.session_state.player_logged_in=True
                         st.session_state.player_id=candidate[1]
                         st.session_state["auth_stamp"] = auth_stamp(candidate)
-                        if remember_device:
-                            st.session_state["recognized_device_id"] = candidate[1]
-                            remember_device_script(make_remember_token(candidate[1]))
-                        else:
-                            forget_device_script()
-                        st.success("Accesso effettuato. Se hai scelto di ricordare il dispositivo, attendi il salvataggio prima di chiudere la pagina.")
-                        st.caption("Dopo il salvataggio, aggiorna la pagina per aprire la dashboard.")
+                        st.session_state["recognized_device_id"] = candidate[1]
+                        st.success("Accesso effettuato.")
+                        st.rerun()
                     else: st.error("Password errata.")
 
     with right:
@@ -2223,7 +2116,7 @@ if not st.session_state.player_logged_in:
             <div class="ld-welcome">LAST DEMONS PORTAL</div>
             <div class="ld-muted"><b>01</b> · Primo accesso: registrati.<br><br>
             <b>02</b> · Attendi l'approvazione.<br><br>
-            <b>03</b> · Dispositivo riconosciuto: accedi direttamente.</div></div>""",unsafe_allow_html=True)
+            <b>03</b> · Dopo l’approvazione: accedi con le tue credenziali.</div></div>""",unsafe_allow_html=True)
         st.markdown("### 👥 Roster ufficiale")
         roster=db_query("""SELECT activision_id,selection,org_role,profile_image_url
             FROM players WHERE status='Approved'
@@ -2993,26 +2886,9 @@ if founder_page:
         )
 
         if current:
-            st.markdown("### 🏆 Regole Win Rate")
-            st.caption(
-                "Contano solo le partite approvate nel periodo visualizzato: nel mese per "
-                "la classifica mensile, nell'intera stagione per il leader stagionale. "
-                "Sotto soglia il player resta in qualificazione; Top Fragger e Rating continuano a contare."
-            )
-            with st.form(f"win_rate_threshold_{current[0]}", enter_to_submit=False):
-                minimum = st.number_input(
-                    "Partite approvate necessarie per entrare nella classifica Win Rate",
-                    min_value=1, max_value=1000, value=int(current[3]), step=1,
-                )
-                save_threshold = st.form_submit_button("💾 SALVA SOGLIA", use_container_width=True)
-                if save_threshold:
-                    try:
-                        set_win_rate_threshold(current[0], int(minimum))
-                    except (ValueError, PermissionError) as exc:
-                        st.error(str(exc))
-                    else:
-                        st.session_state["_season_action_success"] = f"Soglia Win Rate aggiornata: {minimum} partite approvate."
-                        st.rerun()
+            st.markdown("### 🏆 Regole classifiche")
+            st.caption("Top Fragger, Win Rate e Rating: blocchi cumulativi fissi di 5 game "
+                       "approvati per player. I game intermedi sono provvisori.")
             st.warning(FAIR_PLAY_NOTICE)
 
             st.markdown("### 🛡️ Annulla risultati di un player")
@@ -3207,15 +3083,15 @@ def render_esports_leaderboard(rows, metric: str, logged_player: str = ""):
     def score(row):
         if metric == "kills":
             return int(row.get("kills") or 0)
-        return float(row.get("win_rate") or 0.0)
+        return float(row.get("win_rate" if metric == "win_rate" else "rating") or 0.0)
 
     ordered = sorted(
         rows,
         key=lambda row: (score(row), float(row.get("rating") or 0)),
         reverse=True,
     )
-    label = "KILL" if metric == "kills" else "WIN RATE"
-    title = "TOP FRAGGER" if metric == "kills" else "WIN RATE"
+    label = {"kills": "KILL", "win_rate": "WIN RATE", "rating": "RATING"}[metric]
+    title = {"kills": "TOP FRAGGER", "win_rate": "WIN RATE", "rating": "RATING"}[metric]
 
     st.markdown(
         f"""
@@ -3416,149 +3292,34 @@ elif player_page == "🏆 Leaderboard":
     }
     selected_season_label = st.selectbox("🗓️ Stagione", list(season_labels.keys()))
     selected_season_id = season_labels[selected_season_label]
-    selected_minimum = next(int(r[3]) for r in season_rows if r[0] == selected_season_id)
-
-    month_rows = db_query(
-        """
-        SELECT DISTINCT month_year
-        FROM submissions
-        WHERE status='Approved' AND season_id=?
-        ORDER BY month_year DESC
-        """,
-        (selected_season_id,),
-        fetchall=True,
-    ) or []
-    available_months = [m[0] for m in month_rows]
-    current_month = datetime.now().strftime("%Y-%m")
-    if current_month not in available_months:
-        available_months.insert(0, current_month)
-    selected_month = st.selectbox("📅 Mese", available_months)
-
-    selection_label = st.radio(
-        "Divisione",
-        ["Élite", "LD Player"],
-        horizontal=True,
-        key="leaderboard_division_v24",
-    )
+    selection_label = st.radio("Divisione", ["Élite", "LD Player"], horizontal=True,
+                               key="leaderboard_division_v25")
     selection = "Academy" if selection_label == "LD Player" else selection_label
-
     metric_label = st.segmented_control(
-        "Modalità classifica",
-        ["💀 TOP FRAGGER", "🏆 WIN RATE"],
-        default="💀 TOP FRAGGER",
-        key="leaderboard_metric_v24",
-    )
-    metric = "kills" if metric_label == "💀 TOP FRAGGER" else "win_rate"
+        "Modalità classifica", ["💀 TOP FRAGGER", "🏆 WIN RATE", "⭐ RATING"],
+        default="💀 TOP FRAGGER", key="leaderboard_metric_v25")
+    metric = {"💀 TOP FRAGGER": "kills", "🏆 WIN RATE": "win_rate",
+              "⭐ RATING": "rating"}[metric_label]
+    st.caption("Classifiche ufficiali cumulative per stagione: si aggiornano solo al completamento "
+               "di 5, 10, 15, 20… game approvati. I game intermedi restano provvisori.")
     if metric == "win_rate":
         st.warning(FAIR_PLAY_NOTICE)
-        st.info(
-            f"Per entrare nella classifica mensile servono almeno {selected_minimum} partite "
-            "approvate nel mese selezionato. Per il leader stagionale la soglia si applica "
-            "al totale delle partite approvate nella stagione."
-        )
-        st.caption(
-            "Win Rate competitivo basato sul piazzamento: "
-            "1° 100% · 2° 90% · 3° 83% · 4° 77% · 5° 70% · 6° 64% · "
-            "7° 58% · 8° 51% · 9° 45% · 10° 39% · 11° 32% · 12° 26% · "
-            "13° 19% · 14° 13% · 15° 6% · 16° 0%."
-        )
-
-    data = db_query(
-        """
-        SELECT p.activision_id,
-               p.selection,
-               p.profile_image_url,
-               COALESCE(SUM(s.kills),0) AS kills,
-               COALESCE(SUM(s.wins),0) AS wins,
-               COALESCE(SUM(s.matches_played),0) AS matches,
-               COALESCE(SUM(s.rating_gained),0) AS rating,
-               COALESCE(AVG(COALESCE(s.placement_score,
-                   CASE WHEN s.matches_played > 0 THEN s.wins * 100.0 / s.matches_played ELSE 0 END)),0) AS win_rate
-        FROM players p
-        LEFT JOIN submissions s
-          ON s.activision_id=p.activision_id
-         AND s.month_year=?
-         AND s.status='Approved'
-         AND s.season_id=?
-        WHERE p.selection=? AND p.status='Approved'
-        GROUP BY p.activision_id, p.selection, p.profile_image_url
-        HAVING COUNT(s.id) > 0
-        """,
-        (selected_month, selected_season_id, selection),
-        fetchall=True,
-    ) or []
-
-    rows = [
-        {
-            "activision_id": r[0],
-            "selection": r[1],
-            "avatar": r[2],
-            "kills": r[3],
-            "wins": r[4],
-            "matches": r[5],
-            "rating": r[6],
-            "win_rate": r[7],
-        }
-        for r in data
-    ]
-
-    # Season leader summary independent of selected month.
-    season_summary = db_query(
-        """
-        SELECT p.activision_id,
-               COALESCE(SUM(s.kills),0),
-               COALESCE(SUM(s.wins),0),
-               COALESCE(SUM(s.matches_played),0),
-               COALESCE(AVG(COALESCE(s.placement_score,
-                   CASE WHEN s.matches_played > 0 THEN s.wins * 100.0 / s.matches_played ELSE 0 END)),0)
-        FROM players p
-        JOIN submissions s ON s.activision_id=p.activision_id
-        WHERE p.selection=? AND p.status='Approved'
-          AND s.status='Approved' AND s.season_id=?
-        GROUP BY p.activision_id
-        """,
-        (selection, selected_season_id),
-        fetchall=True,
-    ) or []
-
-    if season_summary:
-        top_frag = max(season_summary, key=lambda r: r[1])
-        wr_candidates = [r for r in season_summary if win_rate_eligible(r[3], selected_minimum)]
-        top_wr = max(wr_candidates, key=lambda r: float(r[4] or 0)) if wr_candidates else None
-        sc1, sc2 = st.columns(2)
-        sc1.metric("🔥 Season Kill Leader", top_frag[0], f"{int(top_frag[1])} kill")
-        if top_wr:
-            sc2.metric(
-                "⚡ Season Win Rate Leader",
-                top_wr[0],
-                f"{float(top_wr[4]):.1f}%",
-            )
-        else:
-            sc2.metric("⚡ Season Win Rate Leader", "In qualificazione")
-
-    if metric in ("win_rate", "rating"):
-        qualified = [r for r in rows if win_rate_eligible(r["matches"], selected_minimum)]
-        qualifying = [r for r in rows if not win_rate_eligible(r["matches"], selected_minimum)]
-        my_matches = next((int(r["matches"] or 0) for r in rows if r["activision_id"] == player_id), 0)
-        if player[3] == selection and not win_rate_eligible(my_matches, selected_minimum):
-            st.info(
-                f"🎮 Sei in qualificazione per {metric.replace('_', ' ').title()}: {my_matches}/{selected_minimum} partite approvate "
-                f"nel mese selezionato. Ne mancano {selected_minimum - my_matches}."
-            )
-        if qualified:
-            render_esports_leaderboard(qualified, metric, player_id)
-        else:
-            st.info(f"Nessun player ha ancora raggiunto la soglia {metric.replace('_', ' ').title()} in questo mese.")
-        if qualifying:
-            with st.expander(f"🎮 Player in qualificazione ({len(qualifying)})"):
-                st.dataframe(pd.DataFrame([
-                    {"Player": r["activision_id"],
-                     "Partite approvate": int(r["matches"] or 0),
-                     "Partite mancanti": selected_minimum - int(r["matches"] or 0)}
-                    for r in sorted(qualifying, key=lambda item: str(item["activision_id"]).casefold())
-                ]), hide_index=True, use_container_width=True)
-    else:
+    data = official_ranking_rows(selected_season_id, selection)
+    rows = [{"activision_id": r[0], "selection": r[1], "avatar": r[2],
+             "kills": r[3], "wins": r[4], "matches": r[5],
+             "rating": r[6], "win_rate": r[7]} for r in data]
+    if rows:
         render_esports_leaderboard(rows, metric, player_id)
+    else:
+        st.info("Nessun player ha completato il primo blocco di 5 game approvati.")
+    pending = official_ranking_rows(selected_season_id, selection, include_incomplete=True)
+    unfinished = [(r[0], int(r[5] or 0)) for r in pending if int(r[5] or 0) % 5]
+    if unfinished:
+        with st.expander(f"🎮 Blocchi provvisori ({len(unfinished)})"):
+            st.dataframe(pd.DataFrame([{"Player": pid, "Game approvati": count,
+                        "Prossimo blocco": (count // 5 + 1) * 5,
+                        "Mancanti": 5 - count % 5} for pid, count in unfinished]),
+                        hide_index=True, use_container_width=True)
 
 
 elif player_page == "📸 Carica Prova":
@@ -3567,8 +3328,7 @@ elif player_page == "📸 Carica Prova":
     upload_season = active_season_v241()
     if upload_season:
         st.caption(
-            f"Soglia Win Rate: {upload_season[3]} partite approvate nel mese per la classifica "
-            "mensile e nella stagione per il leader stagionale."
+            "Le tre classifiche ufficiali si aggiornano ogni 5 game approvati nella stagione."
         )
 
     st.markdown(
