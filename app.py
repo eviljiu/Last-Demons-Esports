@@ -3,6 +3,7 @@ from urllib.parse import quote, unquote, urlparse
 import re
 import hashlib
 import base64
+import logging
 import html
 import json
 import time
@@ -11,9 +12,10 @@ import uuid
 import unicodedata
 import requests
 import threading
+from functools import lru_cache
 import psycopg2
 from psycopg2 import pool as pg_pool
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from io import BytesIO
 
@@ -22,6 +24,7 @@ from PIL import Image, ImageOps, UnidentifiedImageError
 import pandas as pd
 import altair as alt
 import streamlit as st
+from streamlit_cookies_manager import EncryptedCookieManager
 import streamlit.components.v1 as components
 from access_control import (OWNER_ID, ALL_ROLES, canonical_role, is_staff, is_owner,
     can_manage_reserved_roles, allowed_roles, can_control_account, auth_stamp, session_matches)
@@ -846,8 +849,9 @@ def release_conn(conn):
         _db_connection_gate().release()
 
 
+@lru_cache(maxsize=512)
 def _sql(query: str) -> str:
-    """Converte i placeholder SQLite ? nei placeholder PostgreSQL %s."""
+    """Converte i placeholder SQLite ? nei placeholder PostgreSQL %s; cache delle query ripetute."""
     return query.replace("?", "%s")
 
 
@@ -1084,13 +1088,18 @@ CACHE_TABLES = (
     "seasons", "founder_notifications", "push_subscriptions",
 )
 
+# A single compiled expression replaces one regex scan per table for every query.
+_CACHE_TABLE_RE = re.compile(r"\b(?:" + "|".join(map(re.escape, sorted(CACHE_TABLES, key=len, reverse=True))) + r")\b", re.IGNORECASE)
+_LD_PERF_LOG = logging.getLogger("ld_app.performance")
+
 @st.cache_resource(show_spinner=False)
 def _cache_versions():
     return {table: 0 for table in CACHE_TABLES}
 
+@lru_cache(maxsize=512)
 def _query_tables(query: str):
-    q = query.lower()
-    return tuple(table for table in CACHE_TABLES if re.search(rf"\b{re.escape(table)}\b", q))
+    found = set(_CACHE_TABLE_RE.findall(query))
+    return tuple(table for table in CACHE_TABLES if table in {name.lower() for name in found})
 
 def _query_version_key(query: str):
     versions = _cache_versions()
@@ -1098,6 +1107,7 @@ def _query_version_key(query: str):
 
 @st.cache_data(ttl=30, max_entries=384, show_spinner=False)
 def _db_read_cached(query: str, params_tuple: tuple, version_key: tuple):
+    started = time.monotonic()
     conn = get_conn()
     try:
         with conn.cursor() as cur:
@@ -1105,6 +1115,9 @@ def _db_read_cached(query: str, params_tuple: tuple, version_key: tuple):
             return cur.fetchall()
     finally:
         release_conn(conn)
+        elapsed = time.monotonic() - started
+        if elapsed >= 0.75:
+            _LD_PERF_LOG.warning("Slow cached DB read: %.3fs (query fingerprint %s)", elapsed, hashlib.sha256(query.encode()).hexdigest()[:12])
 
 
 def _session_read_cache():
@@ -2063,7 +2076,83 @@ for key, value in defaults.items():
         st.session_state[key] = value
 
 
+# Browser cookie contains an opaque random token; only its SHA256 is stored server-side.
+# Set LD_COOKIE_SECRET in Streamlit secrets (at least 32 random characters).
+def _session_cookie_manager():
+    secret = str(os.environ.get("LD_COOKIE_SECRET") or st.secrets.get("LD_COOKIE_SECRET", ""))
+    if len(secret) < 32:
+        return None
+    return EncryptedCookieManager(prefix="ld_esports_v1_", password=secret)
+
+
+def _auth_cookie():
+    try:
+        manager = _session_cookie_manager()
+        if manager is None or not manager.ready():
+            return None
+        return manager
+    except Exception:
+        return None
+
+
+def _issue_browser_session(player):
+    cookies = _auth_cookie()
+    if cookies is None:
+        return
+    token = os.urandom(32).hex()
+    token_hash = hashlib.sha256(token.encode()).hexdigest()
+    db_query("""INSERT INTO ld_browser_sessions (token_hash, player_id, auth_fingerprint, expires_at)
+        VALUES (?, ?, ?, CURRENT_TIMESTAMP + INTERVAL '24 hours')""",
+        (token_hash, player[1], auth_stamp(player)), commit=True)
+    cookies["session"] = token
+    cookies.save()
+
+
+def _restore_browser_session():
+    if st.session_state.get("player_logged_in"):
+        return
+    cookies = _auth_cookie()
+    if cookies is None:
+        return
+    token = cookies.get("session", "")
+    if not isinstance(token, str) or not re.fullmatch(r"[a-f0-9]{64}", token):
+        return
+    token_hash = hashlib.sha256(token.encode()).hexdigest()
+    try:
+        row = db_query("""SELECT player_id, auth_fingerprint FROM ld_browser_sessions
+            WHERE token_hash=? AND revoked_at IS NULL AND expires_at>CURRENT_TIMESTAMP""",
+            (token_hash,), fetchone=True)
+        if row:
+            player = get_player(row[0], fresh=True)
+            if session_matches(player, row[0], row[1]):
+                st.session_state.player_logged_in = True
+                st.session_state.player_id = row[0]
+                st.session_state["auth_stamp"] = row[1]
+                return
+    except Exception:
+        # Missing migration or transient DB failure: require normal password login.
+        return
+    cookies.pop("session", None)
+    cookies.save()
+
+
+def _revoke_browser_session():
+    cookies = _auth_cookie()
+    if cookies is None:
+        return
+    token = cookies.get("session", "")
+    if isinstance(token, str) and re.fullmatch(r"[a-f0-9]{64}", token):
+        try:
+            db_query("UPDATE ld_browser_sessions SET revoked_at=CURRENT_TIMESTAMP WHERE token_hash=?",
+                     (hashlib.sha256(token.encode()).hexdigest(),), commit=True)
+        except Exception:
+            pass
+    cookies.pop("session", None)
+    cookies.save()
+
+
 def player_logout():
+    _revoke_browser_session()
     forget_device_script()
     st.session_state.clear()
     st.rerun()
@@ -2087,6 +2176,8 @@ if _public_profile_id:
     st.stop()
 
 
+
+_restore_browser_session()
 
 if not st.session_state.player_logged_in:
     hero()
@@ -2181,6 +2272,10 @@ if not st.session_state.player_logged_in:
                         st.session_state.player_id=candidate[1]
                         st.session_state["auth_stamp"] = auth_stamp(candidate)
                         st.session_state["recognized_device_id"] = candidate[1]
+                        try:
+                            _issue_browser_session(candidate)
+                        except Exception:
+                            pass  # Password login still works if cookie storage is unavailable.
                         st.success("Accesso effettuato.")
                         st.rerun()
                     else: st.error("Password errata.")
@@ -2234,6 +2329,7 @@ def _base_nav_label(value: str) -> str:
 # One account, one menu. Every run obtains authorization directly from PostgreSQL.
 player = get_player(st.session_state.player_id, fresh=True)
 if not session_matches(player, st.session_state.get("player_id"), st.session_state.get("auth_stamp")):
+    _revoke_browser_session()
     forget_device_script()
     st.session_state.clear()
     st.warning("Accedi di nuovo con il tuo account personale.")
