@@ -2182,7 +2182,7 @@ _player_pending, _player_unread = db_query(
 )[0]
 player_pages = ["🏠 Home", "🏆 Leaderboard", "📸 Carica Prova", "🔔 Notifiche", "👤 Il mio Profilo"]
 staff_pages = ["📊 Dashboard", "🔔 Notifiche organizzazione", "📢 Comunicazioni", "👥 Candidature",
-               "📸 Prove Player", "🎮 Gestione Player", "🗓️ Stagioni"]
+               "📸 Prove Player", "🎮 Gestione Player", "🗓️ Gestione stagioni"]
 nav_pages = player_pages + (staff_pages if manager_access else [])
 # Explicit owner exception: role management only, no Founder data without a staff role.
 if is_owner(player) and not manager_access:
@@ -2873,9 +2873,17 @@ if founder_page:
                 st.success(f"{chosen} è stato rimosso dal roster.")
                 st.rerun()
 
-    elif founder_page == "🗓️ Stagioni":
+    elif founder_page == "🗓️ Gestione stagioni":
+        st.markdown("""<style>
+        /* Founder season management: red separators, generous rhythm, no global changes. */
+        .ld-season-separator {height:2px; margin:42px 0 38px;
+            background:linear-gradient(90deg,transparent 0%,#971521 12%,#df2636 50%,#971521 88%,transparent 100%);
+            box-shadow:0 1px 9px rgba(208,25,45,.18);}
+        [data-testid="stMainBlockContainer"] h3 {padding-top:12px!important;margin-bottom:16px!important;line-height:1.35!important;}
+        [data-testid="stMainBlockContainer"] [data-testid="stDataFrame"] {margin-bottom:16px;}
+        </style>""", unsafe_allow_html=True)
         st.markdown('<div class="ld-section">🗓️ GESTIONE STAGIONI</div>', unsafe_allow_html=True)
-        st.caption("Panoramica, regole e operazioni sulle stagioni. Le azioni irreversibili richiedono conferma.")
+        st.caption("Panoramica e operazioni sulle stagioni. Le azioni irreversibili richiedono conferma.")
         flash = st.session_state.pop("_season_action_success", None)
         if flash:
             st.success(flash)
@@ -2894,12 +2902,8 @@ if founder_page:
         st.dataframe(season_df, hide_index=True, use_container_width=True)
 
         if current:
-            st.markdown("### 🏆 Regole classifiche")
-            st.caption("Top Fragger, Win Rate e Rating: blocchi cumulativi fissi di 5 game "
-                       "approvati per player. I game intermedi sono provvisori.")
-            st.markdown("---")
+            st.markdown('<div class="ld-season-separator"></div>', unsafe_allow_html=True)
             st.markdown("### 🛡️ Annulla risultati di un player")
-            st.caption("Operazione amministrativa: modifica le prove della stagione corrente, non il profilo del player.")
             candidates = staff_query(
                 """SELECT p.activision_id,
                     COUNT(*) FILTER (WHERE s.status='Approved'),
@@ -2916,8 +2920,7 @@ if founder_page:
             st.caption(
                 "Rifiuta tutte le prove già approvate e in attesa del player nella stagione corrente, "
                 "azzerandone i risultati nelle classifiche. Le prove restano consultabili con la "
-                "motivazione. Account, altri player e stagioni precedenti restano invariati. "
-                "Questo comando annulla i risultati esistenti; il player può caricare nuove prove."
+                "motivazione"
             )
             if not candidates:
                 st.info("Nessun risultato da annullare nella stagione corrente.")
@@ -2960,7 +2963,7 @@ if founder_page:
                                 )
                                 st.rerun()
 
-        st.markdown("---")
+        st.markdown('<div class="ld-season-separator"></div>', unsafe_allow_html=True)
         st.markdown("### 🔄 Avvia una nuova stagione")
         st.warning(
             "⚠️ AZZERA STAGIONE chiude la stagione corrente e avvia una nuova stagione con "
@@ -2996,7 +2999,7 @@ if founder_page:
                     st.rerun()
 
 
-        st.markdown("---")
+        st.markdown('<div class="ld-season-separator"></div>', unsafe_allow_html=True)
         st.markdown("### 🧹 Gestione stagione corrente")
         st.caption(
             "Azzera risultati elimina soltanto le prove/risultati della stagione attiva. "
@@ -3030,7 +3033,7 @@ if founder_page:
                         st.rerun()
 
         past_seasons = [s for s in seasons if not s[4]]
-        st.markdown("---")
+        st.markdown('<div class="ld-season-separator"></div>', unsafe_allow_html=True)
         st.markdown("### 🗑️ Elimina stagioni passate")
         st.caption(
             "L'eliminazione è definitiva: rimuove la stagione selezionata e tutte le prove "
